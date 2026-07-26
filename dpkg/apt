@@ -7,3 +7,8 @@ libio-all-lwp-perl
 libgetopt-long-descriptive-perl
 arping
 arp-scan
+libnet-mqtt-simple-perl
+libdata-validate-ip-perl
+libcapture-tiny-perl
+libconfig-simple-perl
+libwww-perl
