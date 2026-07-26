@@ -205,7 +205,7 @@ EOD
                 } else {
                     LOGINF "Mac $mac ($name) is offline";
                 }
-                my @ips = @{$user{IPS}};
+                my @ips = @{$users[$i]{IPS}};
                 push(@ips, $ip);
                 $users[$i]{IPS} = \@ips;
             }
@@ -259,7 +259,7 @@ if ($active_scan) {
             LOGINF "Trying to get ip address for $mac";
             my $ip = mac2ip($mac);
             if (not $ip eq "") {
-                if ($ip ~~ @ips) {
+                if (grep { $_ eq $ip } @ips) {
                     LOGINF "Skipping $mac ($ip) as it was already scanned";
                     next;
                 }
