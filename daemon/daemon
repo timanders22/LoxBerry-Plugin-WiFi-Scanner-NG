@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Daemon script - executed as root at LoxBerry boot.
+# Starts the MQTT command listener as user loxberry.
+#
+# We add 3 arguments when executing the script:
+# command <NAME> <FOLDER> <VERSION>
+
+ARGV2=$2 # Plugin name
+ARGV3=$3 # Plugin installation folder
+
+LBHOMEDIR=${LBHOMEDIR:-/opt/loxberry}
+PLUGINFOLDER=${ARGV3:-wifiscanner}
+LISTENER=$LBHOMEDIR/bin/plugins/$PLUGINFOLDER/mqtt_listener.pl
+
+if [ -x "$LISTENER" ]; then
+    echo "<INFO> Starting WifiScanner MQTT listener"
+    su loxberry -c "$LISTENER > /dev/null 2>&1 &"
+else
+    echo "<WARNING> $LISTENER not found or not executable"
+fi
+
+exit 0

@@ -44,6 +44,7 @@ use Data::Validate::IP;
 use Capture::Tiny qw/capture/;
 
 sub sendFoundUsers();
+sub mqtt_topic_name($);
 sub mac2ip($);
 sub ping($);
 sub lox_die($);
@@ -74,12 +75,29 @@ my $udp_enable      = $pcfg->param("BASE.UDP_ENABLE");
 # Commandline options
 my $verbose = '';
 my $help = '';
+my $mode = '';
 
 GetOptions ('verbose' => \$verbose,
+            'mode=s'  => \$mode,
             'quiet'   => sub { $verbose = 0 });
 
 # Starting...
 LOGSTART "Starting $0 Version $version";
+
+# Mode override via commandline (used by mqtt_listener.pl):
+# 0|both = Fritzbox + active scan, 1|fritzbox = Fritzbox only, 2|ping = active scan only
+if ($mode ne '') {
+    if ($mode =~ /^(0|both|all|full)$/i) {
+        $fritz_enable = 1; $active_scan = 1;
+    } elsif ($mode =~ /^(1|fritz|fritzbox)$/i) {
+        $fritz_enable = 1; $active_scan = 0;
+    } elsif ($mode =~ /^(2|ping|scan|active)$/i) {
+        $fritz_enable = 0; $active_scan = 1;
+    } else {
+        LOGERR "Unknown mode '$mode' - using configured defaults";
+    }
+    LOGINF "Mode override: FRITZBOX_ENABLE=$fritz_enable ACTIVE_SCAN=$active_scan";
+}
 
 if (! %miniservers) {
     lox_die "No Miniservers configured";
@@ -205,7 +223,7 @@ EOD
                 } else {
                     LOGINF "Mac $mac ($name) is offline";
                 }
-                my @ips = @{$user{IPS}};
+                my @ips = @{$users[$i]{IPS}};
                 push(@ips, $ip);
                 $users[$i]{IPS} = \@ips;
             }
@@ -259,7 +277,7 @@ if ($active_scan) {
             LOGINF "Trying to get ip address for $mac";
             my $ip = mac2ip($mac);
             if (not $ip eq "") {
-                if ($ip ~~ @ips) {
+                if (grep { $_ eq $ip } @ips) {
                     LOGINF "Skipping $mac ($ip) as it was already scanned";
                     next;
                 }
@@ -316,11 +334,30 @@ sub sendFoundUsers()
         }
 
             for ($j=0;$j<$user_count;$j++) {
-                LOGOK "Sending Data 'wifiscanner/$users[$j]{NAME}/$users[$j]{ONLINE}' to MQTT broker $mqttcred->{brokeraddress}";
-                $mqtt->retain("wifiscanner/".$users[$j]{NAME}, $users[$j]{ONLINE}) or lox_die "Send error: $!";
+                my $topic = "wifiscanner/" . mqtt_topic_name($users[$j]{NAME});
+                LOGOK "Sending '$users[$j]{ONLINE}' to $topic on MQTT broker $mqttcred->{brokeraddress}";
+                $mqtt->retain($topic, $users[$j]{ONLINE}) or lox_die "Send error: $!";
                 }
         $mqtt->disconnect();
     }
+}
+
+# Ein MQTT-Thema darf weder Leerzeichen noch Umlaute enthalten. Der Name der
+# Person wird deshalb umgeschrieben - dieselbe Ersetzung nutzt die Oberflaeche,
+# damit dort steht, was tatsaechlich veroeffentlicht wird.
+sub mqtt_topic_name($)
+{
+    my $name = $_[0];
+    $name = "" if (!defined $name);
+    my %umlaut = ("\x{e4}" => "ae", "\x{f6}" => "oe", "\x{fc}" => "ue",
+                  "\x{c4}" => "Ae", "\x{d6}" => "Oe", "\x{dc}" => "Ue",
+                  "\x{df}" => "ss");
+    foreach my $u (keys %umlaut) {
+        $name =~ s/$u/$umlaut{$u}/g;
+    }
+    $name =~ s/[^A-Za-z0-9_-]+/_/g;
+    $name =~ s/^_+|_+$//g;
+    return $name;
 }
 
 sub mac2ip($)

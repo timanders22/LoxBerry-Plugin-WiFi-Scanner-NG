@@ -39,5 +39,14 @@ echo "<INFO> Installation folder is: $ARGV4"
 ARGV5=$5 # Fifth argument is Base folder of LoxBerry
 echo "<INFO> Base folder is: $ARGV5"
 
+# Start the MQTT command listener (also started at boot via daemon script)
+LISTENER=$ARGV5/bin/plugins/$ARGV3/mqtt_listener.pl
+if [ -f "$LISTENER" ]; then
+    echo "<INFO> Starting WifiScanner MQTT listener"
+    chmod +x "$LISTENER"
+    pkill -f "$LISTENER" 2>/dev/null
+    nohup "$LISTENER" > /dev/null 2>&1 &
+fi
+
 # Exit with Status 0
 exit 0
