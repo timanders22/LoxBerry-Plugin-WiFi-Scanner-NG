@@ -17,19 +17,19 @@
 ##########################################################################
 # MQTT command listener for the WifiScanner plugin
 #
-# Subscribes to wifiscanner/cmd/# and allows controlling the plugin
+# Subscribes to wifi_ng/cmd/# and allows controlling the plugin
 # from Loxone (via the LoxBerry MQTT Gateway):
 #
-#   wifiscanner/cmd/scan      -> trigger an immediate scan
+#   wifi_ng/cmd/scan      -> trigger an immediate scan
 #                                payload optional: mode override (see below)
-#   wifiscanner/cmd/mode      -> set the query mode (persisted in config)
+#   wifi_ng/cmd/mode      -> set the query mode (persisted in config)
 #                                0|both     = Fritzbox + active scan
 #                                1|fritzbox = Fritzbox query only
 #                                2|ping     = active scan (arping/ping) only
-#   wifiscanner/cmd/interval  -> set scan interval in minutes (1,3,5,10,15,30,60)
-#   wifiscanner/cmd/enable    -> 0/1 enable or disable periodic scanning
+#   wifi_ng/cmd/interval  -> set scan interval in minutes (1,3,5,10,15,30,60)
+#   wifi_ng/cmd/enable    -> 0/1 enable or disable periodic scanning
 #
-# Current state is published retained to wifiscanner/status/#
+# Current state is published retained to wifi_ng/status/#
 ##########################################################################
 
 use LoxBerry::System;
@@ -62,12 +62,12 @@ if ($mqttcred->{brokeruser} and $mqttcred->{brokerpass}) {
     $mqtt->login($mqttcred->{brokeruser}, $mqttcred->{brokerpass});
 }
 
-LOGINF "Connected to MQTT broker $mqttcred->{brokeraddress}, subscribing wifiscanner/cmd/#";
+LOGINF "Connected to MQTT broker $mqttcred->{brokeraddress}, subscribing wifi_ng/cmd/#";
 
 publish_status();
 
 $mqtt->run(
-    "wifiscanner/cmd/#" => \&handle_command,
+    "wifi_ng/cmd/#" => \&handle_command,
 );
 
 LOGEND "WifiScanner MQTT listener stopped";
@@ -83,7 +83,7 @@ sub handle_command
     $payload = "" if (!defined $payload);
     $payload =~ s/^\s+|\s+$//g;
 
-    my ($cmd) = $topic =~ m{^wifiscanner/cmd/(.+)$};
+    my ($cmd) = $topic =~ m{^wifi_ng/cmd/(.+)$};
     return if (!$cmd);
 
     LOGINF "Received command '$cmd' with payload '$payload'";
@@ -97,7 +97,7 @@ sub handle_command
             my $cfg = new Config::Simple($cfgfile);
             $cfg->param("BASE.FRITZBOX_ENABLE", $fritz);
             $cfg->param("BASE.ACTIVE_SCAN", $active);
-            $cfg->save();
+            cfg_speichern($cfg);
             LOGOK "Mode set: FRITZBOX_ENABLE=$fritz ACTIVE_SCAN=$active";
             publish_status();
             trigger_scan("");
@@ -109,7 +109,7 @@ sub handle_command
         if ($payload =~ /^(1|3|5|10|15|30|60)$/) {
             my $cfg = new Config::Simple($cfgfile);
             $cfg->param("BASE.CRON", $payload);
-            $cfg->save();
+            cfg_speichern($cfg);
             update_cron($cfg->param("BASE.ENABLED"), $payload);
             LOGOK "Scan interval set to $payload minute(s)";
             publish_status();
@@ -121,7 +121,7 @@ sub handle_command
         if ($payload =~ /^(0|1)$/) {
             my $cfg = new Config::Simple($cfgfile);
             $cfg->param("BASE.ENABLED", $payload);
-            $cfg->save();
+            cfg_speichern($cfg);
             update_cron($payload, $cfg->param("BASE.CRON"));
             LOGOK "Periodic scanning " . ($payload ? "enabled" : "disabled");
             publish_status();
@@ -144,6 +144,37 @@ sub parse_mode
     return (undef, undef);
 }
 
+# ---------------------------------------------------------------------------
+# Die Konfiguration unteilbar speichern.
+#
+# $cfg->save() schreibt unmittelbar in wifi_scanner.cfg - kuerzen und neu
+# fuellen. Faellt genau in dieses Fenster der Cron-Lauf von check.pl, liest
+# der eine halbe oder leere Datei und arbeitet mit Vorgabewerten weiter.
+#
+# Config::Simple kann das Ziel selbst waehlen: erst in eine Nebendatei
+# schreiben lassen, dann umbenennen. rename() ist im selben Dateisystem
+# unteilbar - der Leser sieht entweder die alte oder die neue Datei.
+# ---------------------------------------------------------------------------
+sub cfg_speichern
+{
+    my ($cfg) = @_;
+    my $tmp = "$cfgfile.tmp.$$";
+    if (!$cfg->write($tmp)) {
+        LOGERR "Konfiguration liess sich nicht schreiben: $tmp";
+        return 0;
+    }
+    # Rechte der Zieldatei uebernehmen, sonst steht sie nachher mit den
+    # Vorgaben der umask da.
+    my @st = stat($cfgfile);
+    chmod($st[2] & 07777, $tmp) if @st;
+    if (!rename($tmp, $cfgfile)) {
+        LOGERR "Konfiguration liess sich nicht umbenennen: $tmp";
+        unlink($tmp);
+        return 0;
+    }
+    return 1;
+}
+
 sub trigger_scan
 {
     my ($mode) = @_;
@@ -157,6 +188,14 @@ sub trigger_scan
         }
     }
     LOGINF "Triggering scan $modearg";
+    # Ohne diese Zeile bleibt nach jedem angestossenen Scan ein Zombie in der
+    # Prozessliste stehen: der Vater ruft weder waitpid auf noch ignoriert er
+    # das Kindsignal. Bei einem Dauerlaeufer, den man ueber MQTT beliebig oft
+    # anstossen kann, summiert sich das.
+    #
+    # 'IGNORE' statt eines eigenen Handlers, weil hier nichts vom Ergebnis
+    # des Kindes abhaengt - check.pl schreibt sein Ergebnis selbst weg.
+    local $SIG{CHLD} = 'IGNORE';
     my $pid = fork();
     if (!defined $pid) {
         LOGERR "Fork failed: $!";
@@ -209,8 +248,8 @@ sub publish_status
     elsif ($fritz)           { $mode = 1; }
     else                     { $mode = 2; }
 
-    $mqtt->retain("wifiscanner/status/mode", $mode);
-    $mqtt->retain("wifiscanner/status/interval", $cron);
-    $mqtt->retain("wifiscanner/status/enabled", $enabled);
+    $mqtt->retain("wifi_ng/status/mode", $mode);
+    $mqtt->retain("wifi_ng/status/interval", $cron);
+    $mqtt->retain("wifi_ng/status/enabled", $enabled);
     LOGDEB "Published status: mode=$mode interval=$cron enabled=$enabled";
 }

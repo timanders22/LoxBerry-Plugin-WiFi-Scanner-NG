@@ -1,0 +1,87 @@
+#!/bin/bash
+# WifiScanner - uninstall
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+#
+# Wird von LoxBerry als root ausgefuehrt. Rueckgabewert 0 = in Ordnung,
+# 1 = Warnung (die Deinstallation laeuft trotzdem weiter).
+#
+# ===================================================================
+# WARUM ES DIESE DATEI GIBT
+# ===================================================================
+#
+# LoxBerry raeumt die Plugin-Ordner weg und entfernt den Cron-Eintrag und
+# die sudoers-Zeilen. Zwei Dinge bleiben sonst liegen:
+#
+#   1. Der MQTT-Listener. Er wird beim Hochfahren mit "nohup ... &"
+#      gestartet und haengt an keinem Elternprozess, den LoxBerry beenden
+#      wuerde - ohne dieses Skript liefe er bis zum naechsten Neustart
+#      weiter und haenge weiter am Broker.
+#   2. Die retained Themen im Broker. Das Plugin veroeffentlicht die
+#      Anwesenheit MIT Retain-Merker, damit der Miniserver nach einem
+#      Neustart sofort den letzten Stand hat. Genau das bedeutet aber:
+#      der Broker haelt sie fest, bis sie jemand loescht.
+#
+# ZUR PROZESSSUCHE - bitte nicht auf pkill zurueckbauen:
+# "pkill -f mqtt_listener.pl" durchsucht die ganze Befehlszeile und traefe
+# auch einen Editor mit offener Datei oder ein zweites Exemplar des
+# Plugins. "ps -C" und "killall" vergleichen den comm-Namen, der bei einem
+# Skript mit Shebang "perl" lautet - die finden gar nichts.
+
+PDIR=$3
+[ -n "$PDIR" ] || PDIR="wifi_ng"
+BASE="${5:-$LBHOMEDIR}"
+[ -n "$BASE" ] && [ -d "$BASE" ] || BASE="/opt/loxberry"
+
+SKRIPT="$BASE/bin/plugins/$PDIR/mqtt_listener.pl"
+
+ist_unser_listener() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | head -2 | grep -qxF "$SKRIPT"
+}
+
+GEFUNDEN=0
+for D in /proc/[0-9]*; do
+    P=$(basename "$D")
+    if ist_unser_listener "$P" && kill -0 "$P" 2>/dev/null; then
+        kill "$P" 2>/dev/null
+        for i in 1 2 3 4 5; do
+            kill -0 "$P" 2>/dev/null || break
+            sleep 1
+        done
+        kill -9 "$P" 2>/dev/null
+        GEFUNDEN=1
+        echo "<OK> MQTT-Listener beendet (PID $P)."
+    fi
+done
+[ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein MQTT-Listener."
+
+echo "<WARNING> Im MQTT-Broker bleiben Werte stehen."
+echo "<INFO> Das Plugin veroeffentlicht die Anwesenheit mit gesetztem"
+echo "<INFO> Retain-Merker. Betroffen sind alle Themen unter"
+echo "<INFO>     wifi_ng/..."
+echo "<INFO> (je Person eine, dazu status/mode, status/interval,"
+echo "<INFO> status/enabled). Zum Aufraeumen: LoxBerry -> System ->"
+echo "<INFO> MQTT Gateway, dort die wifi_ng-Eintraege loeschen."
+echo "<INFO> Wer das nicht tut, sieht in Loxone noch jahrelang die"
+echo "<INFO> Anwesenheit vom Tag der Deinstallation."
+
+# ---------------------------------------------------------------
+# Die Sicherung ausserhalb des Plugin-Ordners
+# ---------------------------------------------------------------
+# ws_config_write() legt bei jedem Speichern eine Kopie NEBEN dem
+# Konfigordner ab: config/plugins/<ordner>.wifi_scanner.backup. Sie
+# liegt dort mit Absicht - so uebersteht sie eine Neuinstallation.
+# Beim Deinstallieren ist das falsch: LoxBerry entfernt
+# config/plugins/<ordner>/, also das VERZEICHNIS, und die Datei
+# daneben bliebe dauerhaft liegen.
+#
+# Sie enthaelt zwar keine Passwoerter, aber die MAC-Adressen und
+# Namen aller ueberwachten Personen - eine Anwesenheitsliste des
+# Haushalts. Die gehoert nicht auf eine Karte, von der jemand
+# glaubt, das Plugin sei entfernt.
+BK="$BASE/config/plugins/$PDIR.wifi_scanner.backup"
+if [ -f "$BK" ]; then
+    rm -f "$BK" && echo "<OK> Sicherung entfernt: $PDIR.wifi_scanner.backup"
+fi
+
+exit 0

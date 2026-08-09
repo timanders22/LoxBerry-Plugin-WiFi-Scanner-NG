@@ -23,19 +23,18 @@ $users = ws_users($cfg);
 
 $fritz  = (string) ws_cfg($cfg, 'BASE.FRITZBOX_ENABLE', '0');
 $active = (string) ws_cfg($cfg, 'BASE.ACTIVE_SCAN', '0');
-$mode = ($fritz === '1' && $active === '1') ? '0 (Fritz!Box + aktiver Scan)'
-      : (($fritz === '1') ? '1 (nur Fritz!Box)' : '2 (nur aktiver Scan)');
+$mode = ($fritz === '1' && $active === '1') ? ws_t('T.M_BEIDES')
+      : (($fritz === '1') ? ws_t('T.M_FRITZ') : ws_t('T.M_SCAN'));
 
 /* ---------- Sofort-Scan ---------- */
 if (isset($_GET['scan'])) {
     $bin = $p['bindir'] . '/check.pl';
     if (!is_file($bin)) {
-        echo "SCAN;OK=0;GRUND=check.pl nicht gefunden ($bin)\n";
+        echo 'SCAN;OK=0;GRUND=' . sprintf(ws_t('T.NICHT_GEFUNDEN'), 'check.pl', $bin) . "\n";
         exit;
     }
-    @exec('nohup ' . escapeshellarg($bin) . ' > /dev/null 2>&1 &');
-    echo "SCAN;OK=1\n\nDer Scan laeuft im Hintergrund. Das Ergebnis steht ein paar Sekunden\n";
-    echo "spaeter im Reiter Logdateien und auf den MQTT-Themen.\n";
+    @exec('nohup perl ' . escapeshellarg($bin) . ' > /dev/null 2>&1 &');
+    echo "SCAN;OK=1\n\n" . ws_t('T.SCAN_LAEUFT') . "\n";
     exit;
 }
 
@@ -43,109 +42,118 @@ if (isset($_GET['scan'])) {
 if (isset($_GET['restart'])) {
     $bin = $p['bindir'] . '/mqtt_listener.pl';
     if (!is_file($bin)) {
-        echo "RESTART;OK=0;GRUND=mqtt_listener.pl nicht gefunden ($bin)\n";
+        echo 'RESTART;OK=0;GRUND=' . sprintf(ws_t('T.NICHT_GEFUNDEN'), 'mqtt_listener.pl', $bin) . "\n";
         exit;
     }
-    @exec('pkill -f mqtt_listener.pl 2>/dev/null');
+    ws_listener_stop();
     usleep(400000);
-    @exec('nohup ' . escapeshellarg($bin) . ' > /dev/null 2>&1 &');
+    @exec('nohup perl ' . escapeshellarg($bin) . ' > /dev/null 2>&1 &');
     usleep(800000);
     $pid = ws_listener_running();
     echo 'RESTART;OK=' . ($pid ? 1 : 0) . ';PID=' . $pid . "\n";
     if (!$pid) {
-        echo "\nDer Listener laeuft nicht. Haeufigste Ursache: auf diesem LoxBerry ist\n";
-        echo "kein MQTT Gateway eingerichtet - dann beendet sich der Listener sofort.\n";
-        echo "Einzelheiten stehen im Log 'mqtt_listener'.\n";
+        echo "\n" . ws_t('T.LISTENER_TOT') . "\n";
     }
     exit;
 }
 
 /* ---------- MQTT-Themen ---------- */
 if (isset($_GET['topics'])) {
-    echo "MQTT-Themen des Plugins\n=======================\n\n";
-    echo "Anwesenheit (retained, 0 = abwesend, 1 = anwesend):\n";
+    $ws_ueber = ws_t('T.H_THEMEN');
+    echo $ws_ueber . "\n" . str_repeat('=', strlen(strip_tags($ws_ueber))) . "\n\n";
+    echo ws_t('T.THEMEN_ANWESENHEIT') . "\n";
     if (!$users) {
-        echo "  (noch keine Personen angelegt)\n";
+        echo '  (' . ws_t('T.KEINE_PERSONEN') . ")\n";
     }
     foreach ($users as $u) {
-        printf("  wifiscanner/%-24s   [%s]\n", ws_topic_name($u['name']), $u['name']);
+        printf("  wifi_ng/%-24s   [%s]\n", ws_topic_name($u['name']), $u['name']);
     }
-    echo "\nZustand (retained):\n";
-    echo "  wifiscanner/status/mode        0 = beides, 1 = nur Fritz!Box, 2 = nur Scan\n";
-    echo "  wifiscanner/status/interval    Scan-Intervall in Minuten\n";
-    echo "  wifiscanner/status/enabled     0/1 periodisches Scannen\n";
-    echo "\nBefehle aus Loxone (bitte NICHT retained senden):\n";
-    echo "  wifiscanner/cmd/scan           leer oder Modus - loest einen Scan aus\n";
-    echo "  wifiscanner/cmd/mode           0/both, 1/fritzbox, 2/ping\n";
-    echo "  wifiscanner/cmd/interval       1, 3, 5, 10, 15, 30, 60\n";
-    echo "  wifiscanner/cmd/enable         0 oder 1\n";
+    echo "\n" . ws_t('T.THEMEN_ZUSTAND') . "\n";
+    printf("  %-30s %s\n", 'wifi_ng/status/mode',     ws_t('T.V_MODE'));
+    printf("  %-30s %s\n", 'wifi_ng/status/interval', ws_t('T.V_INTERVAL'));
+    printf("  %-30s %s\n", 'wifi_ng/status/enabled',  ws_t('T.V_ENABLED'));
+    echo "\n" . ws_t('T.THEMEN_BEFEHLE') . "\n";
+    printf("  %-30s %s\n", 'wifi_ng/cmd/scan',     ws_t('T.C_SCAN'));
+    printf("  %-30s %s\n", 'wifi_ng/cmd/mode',     '0/both, 1/fritzbox, 2/ping');
+    printf("  %-30s %s\n", 'wifi_ng/cmd/interval', '1, 3, 5, 10, 15, 30, 60');
+    printf("  %-30s %s\n", 'wifi_ng/cmd/enable',   '0 / 1');
     exit;
 }
 
 /* ---------- Konfiguration ---------- */
 if (isset($_GET['config'])) {
-    echo "Konfiguration\n=============\nDatei: " . $p['config'] . "\n\n";
+    echo ws_t('T.H_KONFIG') . "\n" . str_repeat('=', strlen(ws_t('T.H_KONFIG'))) . "\n"
+       . ws_t('T.DATEI') . ': ' . $p['config'] . "\n\n";
     foreach ($cfg as $k => $v) {
         printf("%-26s = %s\n", $k, $v);
     }
-    echo "\nHinweis: Das Plugin speichert keine Zugangsdaten. Die Fritz!Box wird\n";
-    echo "ueber TR-064 ohne Anmeldung nach Host-Eintraegen gefragt.\n";
+    echo "\n" . ws_t('T.KONFIG_HINWEIS') . "\n";
     exit;
 }
 
 /* ---------- Selbsttest ---------- */
 if (isset($_GET['diag'])) {
-    echo "WIFISCANNER-DIAGNOSE\n====================\n\n";
+    echo ws_t('T.H_DIAG') . "\n" . str_repeat('=', strlen(ws_t('T.H_DIAG'))) . "\n\n";
 
     $cron = ws_cron_current();
-    echo '1. Periodischer Scan: ' . (ws_cfg($cfg, 'BASE.ENABLED', '0') === '1' ? 'eingeschaltet' : 'AUS') . "\n";
-    echo '   Cron-Verknuepfung:  ' . ($cron !== '' ? $cron : 'KEINE gefunden') . "\n";
-    echo '   Eingestellt:        alle ' . ws_cfg($cfg, 'BASE.CRON', '?') . " Minuten\n\n";
+    printf("1. %-19s %s\n", ws_t('T.D_SCAN') . ':',
+        ws_cfg($cfg, 'BASE.ENABLED', '0') === '1' ? ws_t('T.EINGESCHALTET') : ws_t('T.AUS_GROSS'));
+    printf("   %-19s %s\n", ws_t('T.D_CRON') . ':', $cron !== '' ? $cron : ws_t('T.KEINE_GEFUNDEN'));
+    printf("   %-19s %s\n\n", ws_t('T.D_EINGESTELLT') . ':',
+        sprintf(ws_t('T.ALLE_MINUTEN'), ws_cfg($cfg, 'BASE.CRON', '?')));
 
     $pid = ws_listener_running();
-    echo '2. MQTT-Listener:      ' . ($pid ? 'laeuft (PID ' . $pid . ')' : 'LAEUFT NICHT') . "\n";
+    printf("2. %-19s %s\n", ws_t('T.D_LISTENER') . ':',
+        $pid ? sprintf(ws_t('T.LAEUFT_PID'), $pid) : ws_t('T.LAEUFT_NICHT_GROSS'));
     $broker = ws_mqtt_broker();
-    echo '   MQTT Gateway:       ' . ($broker !== '' ? $broker : 'nicht gefunden') . "\n\n";
+    printf("   %-19s %s\n\n", 'MQTT Gateway:', $broker !== '' ? $broker : ws_t('T.NICHT_GEFUNDEN_KURZ'));
 
-    echo "3. Werkzeuge:\n";
+    echo '3. ' . ws_t('T.D_WERKZEUGE') . ":\n";
     foreach (array('/usr/sbin/arping', '/usr/sbin/arp', '/usr/sbin/arp-scan', '/bin/ping') as $t) {
-        echo '   ' . str_pad($t, 22) . (is_executable($t) ? 'vorhanden' : 'FEHLT') . "\n";
+        echo '   ' . str_pad($t, 22) . (is_executable($t) ? ws_t('T.VORHANDEN') : ws_t('T.FEHLT')) . "\n";
     }
 
-    echo "\n4. Perl-Module:\n";
+    echo "\n4. " . ws_t('T.D_MODULE') . ":\n";
     foreach (array('Net::MQTT::Simple', 'Data::Validate::IP', 'Capture::Tiny', 'Config::Simple', 'XML::Simple', 'LWP::UserAgent') as $m) {
         $rc = 1;
+        // exec() HAENGT an das Feld an, es ersetzt es nicht. Ohne das
+        // Zuruecksetzen waechst $dummy mit jedem geprueften Modul weiter -
+        // hier folgenlos, weil nur $rc benutzt wird, aber es liest sich wie
+        // ein Fehler und waere in der naechsten Fassung einer.
+        $dummy = array();
         @exec('perl -M' . escapeshellarg($m) . ' -e 1 2>/dev/null', $dummy, $rc);
-        echo '   ' . str_pad($m, 22) . ($rc === 0 ? 'vorhanden' : 'FEHLT') . "\n";
+        echo '   ' . str_pad($m, 22) . ($rc === 0 ? ws_t('T.VORHANDEN') : ws_t('T.FEHLT')) . "\n";
     }
 
-    echo "\n5. Personen: " . count($users) . "\n";
+    echo "\n5. " . ws_t('T.D_PERSONEN') . ': ' . count($users) . "\n";
     foreach ($users as $u) {
         $eintraege = array_filter(array_map('trim', explode(';', $u['macs'])));
-        echo '   ' . str_pad($u['name'], 22) . count($eintraege) . " Adresse(n) -> wifiscanner/" . ws_topic_name($u['name']) . "\n";
+        echo '   ' . str_pad($u['name'], 22)
+           . sprintf(ws_t('T.N_ADRESSEN'), count($eintraege))
+           . ' -> wifi_ng/' . ws_topic_name($u['name']) . "\n";
     }
 
-    echo "\nHinweise:\n";
-    echo "- Fehlt die Cron-Verknuepfung, obwohl der periodische Scan eingeschaltet ist:\n";
-    echo "  einmal im Reiter Einstellungen speichern, das legt sie neu an.\n";
-    echo "- Laeuft der Listener nicht, fehlt meist das MQTT Gateway. Ohne Gateway\n";
-    echo "  funktionieren Anwesenheitserkennung und Cron trotzdem, nur die Steuerung\n";
-    echo "  aus Loxone nicht.\n";
-    echo "- arping braucht Rootrechte; die Regel dafuer liegt in sudoers/sudoers.\n";
+    echo "\n" . ws_t('T.H_HINWEISE') . ":\n";
+    echo '- ' . ws_t('T.HINW_CRON') . "\n";
+    echo '- ' . ws_t('T.HINW_LISTENER') . "\n";
+    echo '- ' . ws_t('T.HINW_ARPING') . "\n";
     exit;
 }
 
 /* ---------- Status (Vorgabe) ---------- */
-echo "WifiScanner - Status\n====================\n\n";
-echo 'Periodischer Scan: ' . (ws_cfg($cfg, 'BASE.ENABLED', '0') === '1' ? 'ein' : 'aus')
-    . ', alle ' . ws_cfg($cfg, 'BASE.CRON', '?') . " Minuten\n";
-echo 'Abfrage-Modus:     ' . $mode . "\n";
-echo 'Fritz!Box:         ' . ws_cfg($cfg, 'BASE.FRITZBOX', '-') . ':' . ws_cfg($cfg, 'BASE.FRITZBOX_PORT', '-') . "\n";
-echo 'Weg zu Loxone:     ' . (ws_cfg($cfg, 'BASE.UDP_ENABLE', '0') === '1'
-        ? 'UDP an Port ' . ws_cfg($cfg, 'BASE.PORT', '-') : 'MQTT') . "\n";
-echo 'MQTT-Listener:     ' . (ws_listener_running() ? 'laeuft' : 'laeuft nicht') . "\n";
-echo 'Cron:              ' . (ws_cron_current() !== '' ? ws_cron_current() : 'keine Verknuepfung') . "\n\n";
-echo 'Personen (' . count($users) . "):\n";
+echo ws_t('T.H_STATUS') . "\n" . str_repeat('=', strlen(ws_t('T.H_STATUS'))) . "\n\n";
+printf("%-18s %s, %s\n", ws_t('T.D_SCAN') . ':',
+    ws_cfg($cfg, 'BASE.ENABLED', '0') === '1' ? ws_t('T.EIN') : ws_t('T.AUS'),
+    sprintf(ws_t('T.ALLE_MINUTEN'), ws_cfg($cfg, 'BASE.CRON', '?')));
+printf("%-18s %s\n", ws_t('T.D_MODUS') . ':', $mode);
+printf("%-18s %s\n", 'Fritz!Box:', ws_cfg($cfg, 'BASE.FRITZBOX', '-') . ':' . ws_cfg($cfg, 'BASE.FRITZBOX_PORT', '-'));
+printf("%-18s %s\n", ws_t('T.D_WEG') . ':', ws_cfg($cfg, 'BASE.UDP_ENABLE', '0') === '1'
+    ? sprintf(ws_t('T.UDP_AN_PORT'), ws_cfg($cfg, 'BASE.PORT', '-')) : 'MQTT');
+printf("%-18s %s\n", ws_t('T.D_LISTENER') . ':',
+    ws_listener_running() ? ws_t('T.LAEUFT') : ws_t('T.LAEUFT_NICHT'));
+printf("%-18s %s\n\n", 'Cron:',
+    ws_cron_current() !== '' ? ws_cron_current() : ws_t('T.KEINE_VERKNUEPFUNG'));
+echo ws_t('T.D_PERSONEN') . ' (' . count($users) . "):\n";
 foreach ($users as $u) {
     echo '  ' . str_pad($u['name'], 24) . $u['macs'] . "\n";
 }

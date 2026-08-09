@@ -1,29 +1,71 @@
-<font size="-1">
-	<p>
-                <b><i><TMPL_VAR SETTINGS.ENABLE></i></b> <TMPL_VAR SETTINGS.HELP_ENABLE>
-	</p>
-	<p>
-                <b><i><TMPL_VAR SETTINGS.USER></i></b> <TMPL_VAR SETTINGS.HELP_USER>
-	</p>
-        <p>
-                <b><i><TMPL_VAR SETTINGS.FRITZ_ENABLE></i></b> <TMPL_VAR SETTINGS.HELP_FRITZ_ENABLE>
-        </p>
-	<p>
-                <b><i><TMPL_VAR SETTINGS.FRITZ_IP></i></b> <TMPL_VAR SETTINGS.HELP_FRITZ_IP>
-	</p>
-	<p>
-                <b><i><TMPL_VAR SETTINGS.FRITZ_PORT></i></b> <TMPL_VAR SETTINGS.HELP_FRITZ_PORT>
-	</p>
-        <p>
-                <b><i><TMPL_VAR SETTINGS.ACTIVE_SCAN></i></b> <TMPL_VAR SETTINGS.HELP_ACTIVE_SCAN>
-        </p>
-        <p>
-                <b><i><TMPL_VAR SETTINGS.USE_CACHE></i></b> <TMPL_VAR SETTINGS.HELP_USE_CACHE>
-        </p>
-        <p>
-                <b><i><TMPL_VAR SETTINGS.PING_CMD></i></b> <TMPL_VAR SETTINGS.HELP_PING_CMD>
-        </p>
-	<p>
-                <b><i><TMPL_VAR SETTINGS.SEND_UDP></i></b> <TMPL_VAR SETTINGS.HELP_SEND_UDP>
-	</p>
-</font>
+<style>
+/* Die Hilfe wird in einem eigenen Fenster angezeigt und laedt das Stylesheet
+   der Plugin-Oberflaeche nicht mit - deshalb hier dieselben Regeln. */
+.sm-tbl { border-collapse: collapse; width: 100%; margin: 8px 0; }
+.sm-tbl td, .sm-tbl th { border: 1px solid #ddd; padding: 6px 9px; text-align: left; font-size: 0.9em; }
+.sm-tbl th { background: #f0f0f0; }
+.sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
+</style>
+
+<!--
+  Bis 2.5 stand hier eine Datei aus <TMPL_VAR SETTINGS....>-Platzhaltern,
+  gefuellt aus templates/lang/help_de.ini und help_en.ini. Das war die
+  Mechanik der alten Perl-CGI-Oberflaeche (HTML::Template). Die Oberflaeche
+  ist seit 2.5 PHP und setzt keine solchen Platzhalter ein - im Hilfefenster
+  standen also woertlich "<TMPL_VAR SETTINGS.ENABLE>" und so weiter. Die
+  beiden help_*.ini wurden von niemandem mehr gelesen und sind entfallen.
+-->
+
+<h2>Wifi Scanner</h2>
+
+<p>Erkennt anhand von <b>MAC- und IP-Adressen</b>, wer zu Hause ist, und meldet
+je Person <b>0</b> (abwesend) oder <b>1</b> (anwesend) an den Miniserver.</p>
+
+<h3>Die zwei Suchwege</h3>
+
+<table class="sm-tbl">
+<tr><th style="width:32%">Weg</th><th>Wann sinnvoll</th></tr>
+<tr><td><b>Fritz!Box fragen</b> (TR-064)</td>
+    <td>Schnell und lautlos &ndash; der Router weiß ohnehin, wer angemeldet ist.
+        Setzt eine Fritz!Box mit eingeschaltetem TR-064 voraus.</td></tr>
+<tr><td><b>Aktiv suchen</b> (arping/ping)</td>
+    <td>Notwendig ohne Fritz!Box. Weckt Geräte unter Umständen aus dem
+        Ruhezustand.</td></tr>
+</table>
+
+<p><b>Beide zusammen</b> sind die schonendste Einstellung: erst den Router
+fragen, und nur wer dort fehlt, wird angepingt.</p>
+
+<h3>Häufige Stolperstellen</h3>
+
+<ul>
+<li><b>Handys verschwinden kurz.</b> WLAN-Geräte schalten den Funk im
+    Ruhezustand ab. In Loxone gehört deshalb hinter das Ergebnis eine
+    <b>Ausschaltverzögerung von 10 bis 15 Minuten</b>, bevor die Abwesenheit
+    etwas auslöst &ndash; sonst schaltet die Heizung ab, weil ein Telefon kurz
+    geschlafen hat.</li>
+<li><b>Zufällige MAC-Adressen.</b> Aktuelle Telefone verwenden je WLAN eine
+    eigene, zufällige MAC. Im Gerät muss für das Heimnetz die
+    <i>private WLAN-Adresse</i> abgeschaltet sein, sonst ändert sich die
+    Adresse und die Erkennung geht ins Leere. Alternativ die feste IP-Adresse
+    aus der Fritz!Box eintragen.</li>
+<li><b>Ohne MQTT Gateway kein MQTT.</b> Ist auf dem LoxBerry kein Gateway
+    eingerichtet, beendet sich der MQTT-Listener sofort und die Steuerung aus
+    Loxone bleibt stumm. Dann bleibt nur der UDP-Weg.</li>
+</ul>
+
+<h3>Steuerung aus Loxone</h3>
+
+<p>Über virtuelle Ausgänge, <b>nicht retained</b> gesendet:</p>
+
+<table class="sm-tbl">
+<tr><th style="width:40%">Thema</th><th>Wirkung</th></tr>
+<tr><td><span class="sm-mono">wifi_ng/cmd/scan</span></td><td>Sofort-Scan</td></tr>
+<tr><td><span class="sm-mono">wifi_ng/cmd/mode</span></td><td>Suchweg umstellen</td></tr>
+<tr><td><span class="sm-mono">wifi_ng/cmd/interval</span></td><td>Abfragetakt in Minuten</td></tr>
+<tr><td><span class="sm-mono">wifi_ng/cmd/enable</span></td><td>periodisches Scannen aus/ein</td></tr>
+</table>
+
+<p>Alles Weitere steht im Reiter <i>Einbindung in Loxone</i>; der Reiter
+<i>Test</i> enthält eine Diagnose, die Zeitplan, Listener, Broker und die
+benötigten Werkzeuge einzeln prüft.</p>

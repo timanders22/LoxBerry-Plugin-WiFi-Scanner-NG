@@ -10,14 +10,38 @@ ARGV2=$2 # Plugin name
 ARGV3=$3 # Plugin installation folder
 
 LBHOMEDIR=${LBHOMEDIR:-/opt/loxberry}
-PLUGINFOLDER=${ARGV3:-wifiscanner}
+PLUGINFOLDER=${ARGV3:-wifi_ng}
 LISTENER=$LBHOMEDIR/bin/plugins/$PLUGINFOLDER/mqtt_listener.pl
 
-if [ -x "$LISTENER" ]; then
-    echo "<INFO> Starting WifiScanner MQTT listener"
-    su loxberry -c "$LISTENER > /dev/null 2>&1 &"
+if [ -f "$LISTENER" ]; then
+    # Laeuft schon einer? Beim Systemstart sollte das nicht vorkommen - aber
+    # dieses Skript laesst sich auch von Hand aufrufen, und zwei Listener auf
+    # denselben MQTT-Themen beantworten jeden Befehl doppelt.
+    #
+    # Geprueft wird ARGUMENTWEISE gegen den vollen Pfad: /proc/<pid>/cmdline
+    # trennt die Argumente mit Nullbytes, und ein "pkill -f" traefe auch
+    # einen Editor mit offener Datei oder ein zweites Exemplar des Plugins.
+    LAEUFT=""
+    for D in /proc/[0-9]*; do
+        P=$(basename "$D")
+        if tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null | head -2 | grep -qxF "$LISTENER"; then
+            LAEUFT="$P"
+            break
+        fi
+    done
+    if [ -n "$LAEUFT" ]; then
+        echo "<INFO> WifiScanner MQTT listener laeuft bereits (PID $LAEUFT)"
+    else
+        echo "<INFO> Starting WifiScanner MQTT listener"
+        # -s /bin/bash ausdruecklich: ist fuer loxberry keine oder eine
+        # nicht-interaktive Anmeldeshell eingetragen, fuehrt "su -c" den
+        # Befehl gar nicht aus - lautlos, denn die Ausgabe geht nach
+        # /dev/null. Und "perl" davor, damit ein verlorenes
+        # Ausfuehrungsrecht den Start nicht stillschweigend verhindert.
+        su loxberry -s /bin/bash -c "perl '$LISTENER' > /dev/null 2>&1 &"
+    fi
 else
-    echo "<WARNING> $LISTENER not found or not executable"
+    echo "<WARNING> $LISTENER not found"
 fi
 
 exit 0

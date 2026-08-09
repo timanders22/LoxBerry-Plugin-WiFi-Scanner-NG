@@ -1,0 +1,69 @@
+WiFi Scanner NG - LoxBerry-Plugin
+=================================
+
+Dieses Werk steht unter der Apache License 2.0 (siehe LICENSE).
+
+
+Urspruengliches Werk
+--------------------
+LoxBerry-Plugin-WifiScanner
+Copyright 2018 Dominik Holland, dominik.holland@googlemail.com
+https://github.com/Gagi2k/LoxBerry-Plugin-WifiScanner
+
+Die Fassung 2.3 (letzte Aenderung 2022) ist die Grundlage dieser
+Fortfuehrung. bin/check.pl stammt zu grossen Teilen von dort - nachgemessen
+sind 112 von 144 unterschiedlichen Codezeilen woertlich uebernommen.
+
+
+Aenderungen gegenueber dem Original (Apache License 2.0, Abschnitt 4 b)
+-----------------------------------------------------------------------
+
+Geaendert wurden: bin/check.pl, plugin.cfg, postinstall.sh, postupgrade.sh,
+preinstall.sh, preupgrade.sh, config/wifi_scanner.cfg, dpkg/apt,
+sudoers/sudoers, templates/help/help.html, templates/lang/language_*.ini,
+README.md und die Symbole unter icons/.
+
+Neu hinzugekommen sind: bin/mqtt_listener.pl, daemon/daemon,
+uninstall/uninstall, config/mqtt_subscriptions.cfg und die
+PHP-Oberflaeche unter webfrontend/htmlauth/ (index.php, ws_lib.php,
+ws_test.php).
+
+Entfallen sind: die Perl-CGI-Oberflaeche (webfrontend/htmlauth/index.cgi,
+webfrontend/html/scan.cgi, templates/index.html, templates/lang/help_*.ini).
+
+Wesentliche Aenderungen:
+
+  - Oberflaeche von Perl-CGI mit HTML::Template auf PHP nach dem
+    LoxBerry-Hausstandard umgestellt. Die Konfigurationsdatei blieb im
+    Config::Simple-Format, damit check.pl unveraendert weiterlaeuft.
+  - MQTT: Anwesenheit wird retained veroeffentlicht; ein eigener Listener
+    (bin/mqtt_listener.pl) nimmt Befehle entgegen.
+  - Suche nach arping, arp und arp-scan der Reihe nach in /usr/sbin, /sbin,
+    /usr/bin und /bin, statt einen festen Pfad anzunehmen.
+  - INTERFACE von 1.0 auf 2.0; die Originalfassung liess sich auf LoxBerry 3
+    und 4 nicht mehr installieren.
+
+  3.0.0  Eigener Name: "WiFi Scanner NG", Ordner wifi_ng.
+
+         WARUM DER ORDNER WECHSELT: Er bestimmt zugleich das MQTT-Thema, und
+         das hiess in beiden Plugins "wifiscanner". Wer beide installiert
+         hatte, bekam die Anwesenheit zweier Installationen unter denselben
+         Themen gemeldet. Die Themen lauten jetzt wifi_ng/<Person>,
+         wifi_ng/status/... und wifi_ng/cmd/...
+
+         WAS DAS BEDEUTET: LoxBerry bildet seine Kennung aus [AUTHOR] NAME,
+         EMAIL und [PLUGIN] NAME. Mit dem neuen Plugin-Namen ist das fuer
+         LoxBerry ein anderes Plugin - eine vorhandene Installation bekommt
+         dieses Update NICHT angeboten und muss einmal neu installiert
+         werden. Jeder virtuelle Eingang im Miniserver, der auf
+         wifiscanner/... hoert, muss nachgezogen werden.
+
+
+Marken
+------
+Fritz!Box ist eine Marke der AVM GmbH. Dieses Plugin steht in keiner
+Verbindung zu diesem Unternehmen und wird von ihm weder herausgegeben noch
+unterstuetzt.
+
+Copyright der Aenderungen:
+  2026 The LoxBerry WifiScanner Plugin Authors

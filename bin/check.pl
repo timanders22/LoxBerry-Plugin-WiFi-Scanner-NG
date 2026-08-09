@@ -8,6 +8,13 @@
 
 # Copyright 2018 Dominik Holland, dominik.holland@googlemail.com
 #
+# DIESE DATEI WURDE GEAENDERT (Apache License 2.0, Abschnitt 4 b).
+# Sie stammt aus dem Plugin LoxBerry-Plugin-WifiScanner von Dominik Holland
+# und ist fuer diese Fortfuehrung ueberarbeitet worden: MQTT-Ausgabe,
+# Suche nach arping/arp/arp-scan in mehreren Verzeichnissen, Anpassungen an
+# LoxBerry 3 und 4. Seit 3.0.0 lautet das MQTT-Thema wifi_ng/... statt
+# wifiscanner/... - die vollstaendige Liste der Aenderungen steht in NOTICE.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -38,6 +45,32 @@ use Cwd 'abs_path';
 use open qw(:std :utf8);
 use POSIX qw/ strftime /;
 use IO::Socket;
+
+# ---------------------------------------------------------------------------
+# Wo liegen arp, arping und arp-scan?
+#
+# Fest eingetragen war /usr/sbin. Seit dem usr-merge in Debian 12/13 koennen
+# die Programme auch unter /usr/bin liegen, und auf manchen Aufsetzungen ist
+# /sbin nur ein Verweis. Gesucht wird deshalb der Reihe nach; gefunden wird
+# der erste ausfuehrbare Treffer.
+#
+# WICHTIG: die sudoers-Zeilen des Plugins nennen weiterhin die Pfade unter
+# /usr/sbin. Wird ein Programm anderswo gefunden, laesst sudo den Aufruf
+# nicht zu - deshalb legt postinstall.sh in diesem Fall einen Verweis in
+# /usr/sbin an. Hier wird der gefundene Pfad nur benutzt, wenn er dem in
+# sudoers eingetragenen entspricht.
+sub werkzeug
+{
+    my ($name) = @_;
+    for my $d ('/usr/sbin', '/sbin', '/usr/bin', '/bin') {
+        my $p = "$d/$name";
+        return $p if -x $p;
+    }
+    return "/usr/sbin/$name";   # Rueckfall: die Meldung von sudo ist aussagekraeftiger als nichts
+}
+our $ARP      = werkzeug('arp');
+our $ARPING   = werkzeug('arping');
+our $ARPSCAN  = werkzeug('arp-scan');
 use Net::MQTT::Simple;
 use LoxBerry::IO;
 use Data::Validate::IP;
@@ -254,7 +287,10 @@ if ($active_scan) {
         $log_cmd = ">> /dev/null 2>&1";
         if ($log->loglevel() >= 7) {
             my $logfile = $log->filename();
-           $log_cmd = ">> $logfile 2>&1";
+           # Der Pfad gehoert in Anfuehrungszeichen: er wird gleich in eine
+           # Shell-Befehlszeile eingesetzt, und ein Leerzeichen darin waere
+           # dort ein Trennzeichen statt eines Namensbestandteils.
+           $log_cmd = ">> \"$logfile\" 2>&1";
         }
 
         $found = 0;
@@ -325,6 +361,17 @@ sub sendFoundUsers()
 
         my $mqttcred = LoxBerry::IO::mqtt_connectiondetails();
 
+        # Ist auf dem LoxBerry kein MQTT-Gateway eingerichtet, liefert die
+        # Funktion undef. Der unmittelbare Zugriff auf {brokeraddress} war
+        # dann ein "Can't use an undefined value as a HASH reference" - das
+        # Skript starb mitten im Lauf, ohne das Protokoll ordentlich zu
+        # schliessen, und niemand sah den Grund.
+        if (!$mqttcred || !$mqttcred->{brokeraddress}) {
+            LOGERR "Kein MQTT-Gateway eingerichtet (System -> MQTT Gateway). "
+                 . "Die Anwesenheit wird nicht veroeffentlicht.";
+            return;
+        }
+
         # Connect to broker
         my $mqtt = Net::MQTT::Simple->new($mqttcred->{brokeraddress});
 
@@ -334,7 +381,7 @@ sub sendFoundUsers()
         }
 
             for ($j=0;$j<$user_count;$j++) {
-                my $topic = "wifiscanner/" . mqtt_topic_name($users[$j]{NAME});
+                my $topic = "wifi_ng/" . mqtt_topic_name($users[$j]{NAME});
                 LOGOK "Sending '$users[$j]{ONLINE}' to $topic on MQTT broker $mqttcred->{brokeraddress}";
                 $mqtt->retain($topic, $users[$j]{ONLINE}) or lox_die "Send error: $!";
                 }
@@ -366,7 +413,7 @@ sub mac2ip($)
     my $validator=Data::Validate::IP->new;
     my $ip = "";
     if ($use_cache) {
-        $ip = `/usr/sbin/arp -e -n | grep $mac | cut -f 1 -d ' '`;
+        $ip = `$ARP -e -n | grep $mac | cut -f 1 -d ' '`;
         chomp($ip);
     }
     if (!$validator->is_ipv4($ip)) {
@@ -377,13 +424,13 @@ sub mac2ip($)
         }
         my $stderr;
         ($ip, $stderr) = capture {
-          system ( "sudo /usr/sbin/arp-scan --destaddr=$mac --localnet -N --ignoredups | grep $mac | cut -f 1" );
+          system ( "sudo $ARPSCAN --destaddr=$mac --localnet -N --ignoredups | grep $mac | cut -f 1" );
         };
         chomp($ip);
         if($validator->is_ipv4($ip)) {
             if ($use_cache) {
                 LOGINF "Found $ip, adding the mac to arp table (cache)";
-                system("sudo /usr/sbin/arp -s $ip $mac");
+                system("sudo $ARP -s $ip $mac");
             } else {
                 LOGDEB "Found $ip";
             }
@@ -403,7 +450,7 @@ sub ping($)
     LOGINF "Ping $ip";
     if ($ping_cmd == 0) {
         # This sends really a lot of request, but it makes sure we get an answer as fast as possible
-        if (system("sudo /usr/sbin/arping -W 0.2 -c 20 -C1 $ip $log_cmd") == 0) {
+        if (system("sudo $ARPING -W 0.2 -c 20 -C1 $ip $log_cmd") == 0) {
             LOGINF "Host $ip is online";
             return 1;
         }

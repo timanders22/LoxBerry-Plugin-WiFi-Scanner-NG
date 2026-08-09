@@ -21,8 +21,23 @@ LISTENER=$ARGV5/bin/plugins/$ARGV3/mqtt_listener.pl
 if [ -f "$LISTENER" ]; then
     echo "<INFO> Restarting WifiScanner MQTT listener"
     chmod +x "$LISTENER"
-    pkill -f "$LISTENER" 2>/dev/null
-    nohup "$LISTENER" > /dev/null 2>&1 &
+    # Gezielt ueber die Befehlszeile, argumentweise: "pkill -f" traefe auch
+    # einen Editor mit offener Datei oder ein zweites Exemplar des Plugins.
+    for D in /proc/[0-9]*; do
+        P=$(basename "$D")
+        if tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null | head -2 | grep -qxF "$LISTENER"; then
+            kill "$P" 2>/dev/null
+            # Auf das Ende warten, bevor der neue startet. Bis 2.5.1 folgte
+            # der Start unmittelbar - der alte Prozess haengt dann noch am
+            # Broker, und zwei Listener beantworten dieselben Themen.
+            for i in 1 2 3 4 5; do
+                kill -0 "$P" 2>/dev/null || break
+                sleep 1
+            done
+            kill -9 "$P" 2>/dev/null
+        fi
+    done
+    nohup perl "$LISTENER" > /dev/null 2>&1 &
 fi
 
 # Exit with Status 0
