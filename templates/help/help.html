@@ -8,64 +8,52 @@
 </style>
 
 <!--
-  Bis 2.5 stand hier eine Datei aus <TMPL_VAR SETTINGS....>-Platzhaltern,
-  gefuellt aus templates/lang/help_de.ini und help_en.ini. Das war die
-  Mechanik der alten Perl-CGI-Oberflaeche (HTML::Template). Die Oberflaeche
-  ist seit 2.5 PHP und setzt keine solchen Platzhalter ein - im Hilfefenster
-  standen also woertlich "<TMPL_VAR SETTINGS.ENABLE>" und so weiter. Die
-  beiden help_*.ini wurden von niemandem mehr gelesen und sind entfallen.
+  Bis 2.5 stand hier eine Datei aus Platzhaltern, gefuellt aus
+  templates/lang/help_de.ini und help_en.ini. Sie wurden im Hilfefenster
+  woertlich angezeigt, und daraus wurde der falsche Schluss gezogen, die
+  PHP-Oberflaeche koenne diese Mechanik nicht.
+
+  Das stimmt nicht. LBWeb::gethelp() in libs/phplib/loxberry_web.php setzt
+  die Platzhalter sehr wohl ein - ueber LBTemplate. Angezeigt wurden sie
+  woertlich, weil das Plugin lbheader() einen leeren dritten Parameter gab
+  und die Sprachdateien deshalb nie gelesen wurden. Nachgeprueft am
+  Quelltext am 10.08.2026; die Mechanik ist ab 3.0.2 wieder in Betrieb.
 -->
 
-<h2>Wifi Scanner</h2>
+<h2><TMPL_VAR HILFE.K01></h2>
 
-<p>Erkennt anhand von <b>MAC- und IP-Adressen</b>, wer zu Hause ist, und meldet
-je Person <b>0</b> (abwesend) oder <b>1</b> (anwesend) an den Miniserver.</p>
+<p><TMPL_VAR HILFE.K02></p>
 
-<h3>Die zwei Suchwege</h3>
+<h3><TMPL_VAR HILFE.K03></h3>
 
 <table class="sm-tbl">
-<tr><th style="width:32%">Weg</th><th>Wann sinnvoll</th></tr>
-<tr><td><b>Fritz!Box fragen</b> (TR-064)</td>
-    <td>Schnell und lautlos &ndash; der Router weiß ohnehin, wer angemeldet ist.
-        Setzt eine Fritz!Box mit eingeschaltetem TR-064 voraus.</td></tr>
-<tr><td><b>Aktiv suchen</b> (arping/ping)</td>
-    <td>Notwendig ohne Fritz!Box. Weckt Geräte unter Umständen aus dem
-        Ruhezustand.</td></tr>
+<tr><th style="width:32%"><TMPL_VAR HILFE.K12></th><th><TMPL_VAR HILFE.K13></th></tr>
+<tr><td><TMPL_VAR HILFE.K14></td>
+    <td><TMPL_VAR HILFE.K15></td></tr>
+<tr><td><TMPL_VAR HILFE.K16></td>
+    <td><TMPL_VAR HILFE.K17></td></tr>
 </table>
 
-<p><b>Beide zusammen</b> sind die schonendste Einstellung: erst den Router
-fragen, und nur wer dort fehlt, wird angepingt.</p>
+<p><TMPL_VAR HILFE.K04></p>
 
-<h3>Häufige Stolperstellen</h3>
+<h3><TMPL_VAR HILFE.K05></h3>
 
 <ul>
-<li><b>Handys verschwinden kurz.</b> WLAN-Geräte schalten den Funk im
-    Ruhezustand ab. In Loxone gehört deshalb hinter das Ergebnis eine
-    <b>Ausschaltverzögerung von 10 bis 15 Minuten</b>, bevor die Abwesenheit
-    etwas auslöst &ndash; sonst schaltet die Heizung ab, weil ein Telefon kurz
-    geschlafen hat.</li>
-<li><b>Zufällige MAC-Adressen.</b> Aktuelle Telefone verwenden je WLAN eine
-    eigene, zufällige MAC. Im Gerät muss für das Heimnetz die
-    <i>private WLAN-Adresse</i> abgeschaltet sein, sonst ändert sich die
-    Adresse und die Erkennung geht ins Leere. Alternativ die feste IP-Adresse
-    aus der Fritz!Box eintragen.</li>
-<li><b>Ohne MQTT Gateway kein MQTT.</b> Ist auf dem LoxBerry kein Gateway
-    eingerichtet, beendet sich der MQTT-Listener sofort und die Steuerung aus
-    Loxone bleibt stumm. Dann bleibt nur der UDP-Weg.</li>
+<li><TMPL_VAR HILFE.K06></li>
+<li><TMPL_VAR HILFE.K07></li>
+<li><TMPL_VAR HILFE.K08></li>
 </ul>
 
-<h3>Steuerung aus Loxone</h3>
+<h3><TMPL_VAR HILFE.K09></h3>
 
-<p>Über virtuelle Ausgänge, <b>nicht retained</b> gesendet:</p>
+<p><TMPL_VAR HILFE.K10></p>
 
 <table class="sm-tbl">
-<tr><th style="width:40%">Thema</th><th>Wirkung</th></tr>
-<tr><td><span class="sm-mono">wifi_ng/cmd/scan</span></td><td>Sofort-Scan</td></tr>
-<tr><td><span class="sm-mono">wifi_ng/cmd/mode</span></td><td>Suchweg umstellen</td></tr>
-<tr><td><span class="sm-mono">wifi_ng/cmd/interval</span></td><td>Abfragetakt in Minuten</td></tr>
-<tr><td><span class="sm-mono">wifi_ng/cmd/enable</span></td><td>periodisches Scannen aus/ein</td></tr>
+<tr><th style="width:40%"><TMPL_VAR HILFE.K18></th><th><TMPL_VAR HILFE.K19></th></tr>
+<tr><td><TMPL_VAR HILFE.K20></td><td><TMPL_VAR HILFE.K21></td></tr>
+<tr><td><TMPL_VAR HILFE.K22></td><td><TMPL_VAR HILFE.K23></td></tr>
+<tr><td><TMPL_VAR HILFE.K24></td><td><TMPL_VAR HILFE.K25></td></tr>
+<tr><td><TMPL_VAR HILFE.K26></td><td><TMPL_VAR HILFE.K27></td></tr>
 </table>
 
-<p>Alles Weitere steht im Reiter <i>Einbindung in Loxone</i>; der Reiter
-<i>Test</i> enthält eine Diagnose, die Zeitplan, Listener, Broker und die
-benötigten Werkzeuge einzeln prüft.</p>
+<p><TMPL_VAR HILFE.K11></p>
