@@ -7,14 +7,25 @@ ARGV3=$3 # Third argument is Plugin installation folder
 ARGV4=$4 # Forth argument is Plugin version
 ARGV5=$5 # Fifth argument is Base folder of LoxBerry
 
-echo "<INFO> Copy back existing config files"
-cp -p -v -r /tmp/$ARGV1\_upgrade/config/$ARGV3/* $ARGV5/config/plugins/$ARGV3/
+# Die Sicherung liegt seit dem 10.08.2026 unter data/ statt unter /tmp: /tmp
+# ist auf dem LoxBerry eine Ramdisk und ausserdem fuer jeden lesbar.
+#
+# Der alte Pfad benutzte ausserdem $ARGV1 - das ist NICHT der Arbeitsordner,
+# sondern eine zehnstellige Zufallskennung des Installers.
+SICHER="$ARGV5/data/plugins/$ARGV3/upgrade_sicherung"
+if [ -d "$SICHER" ]; then
+    echo "<INFO> Copy back existing config files"
+    cp -p -r "$SICHER/config/." "$ARGV5/config/plugins/$ARGV3/" 2>/dev/null
 
-echo "<INFO> Copy back existing log files"
-cp -p -v -r /tmp/$ARGV1\_upgrade/log/$ARGV3/* $ARGV5/log/plugins/$ARGV3/
+    echo "<INFO> Copy back existing log files"
+    mkdir -p "$ARGV5/log/plugins/$ARGV3"
+    cp -p -r "$SICHER/log/." "$ARGV5/log/plugins/$ARGV3/" 2>/dev/null
 
-echo "<INFO> Remove temporary folders"
-rm -r /tmp/$ARGV1\_upgrade
+    echo "<INFO> Remove backup folder"
+    rm -rf "$SICHER"
+else
+    echo "<INFO> Keine Sicherung vorhanden - offenbar eine Erstinstallation."
+fi
 
 # Restart the MQTT command listener with the new version
 LISTENER=$ARGV5/bin/plugins/$ARGV3/mqtt_listener.pl
