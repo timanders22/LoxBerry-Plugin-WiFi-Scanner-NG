@@ -39,7 +39,7 @@ $ws_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
  * ergaenzt und eine davon vergisst, bekommt keinen Fehler, sondern eine
  * Seite, die nach jedem Absenden auf Einstellungen zurueckspringt. Die
  * Beschriftungen brauchen ws_t() und kommen weiter unten dazu. */
-$ws_reiter_ids = array('settings', 'loxone', 'test', 'log');
+$ws_reiter_ids = array('settings', 'mqtt', 'loxone', 'test', 'log');
 $ws_tab = preg_match('/^tab-(' . implode('|', $ws_reiter_ids) . ')$/', $ws_wunsch)
     ? $ws_wunsch : 'tab-' . $ws_reiter_ids[0];
 
@@ -55,7 +55,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $neu['BASE.ACTIVE_SCAN']     = isset($_POST['active_scan']) ? '1' : '0';
     $neu['BASE.USE_CACHE']       = isset($_POST['use_cache']) ? '1' : '0';
     $neu['BASE.PING_CMD']        = ((string) ($_POST['ping_cmd'] ?? '0') === '1') ? '1' : '0';
-    $neu['BASE.UDP_ENABLE']      = ((string) ($_POST['out_way'] ?? 'mqtt') === 'udp') ? '1' : '0';
+    // Uebertragungsweg wohnt seit 3.1.7 im eigenen MQTT-Reiter - hier aus
+    // dem Bestand uebernehmen, sonst stellte jedes Speichern der
+    // Einstellungen UDP-Anlagen still auf MQTT um.
+    $neu['BASE.UDP_ENABLE']      = ws_cfg($alt, 'BASE.UDP_ENABLE', '0');
 
     // Eingaben nie hart filtern - nur Steuerzeichen und Anfuehrungszeichen raus.
     $saeubern = function ($s) {
@@ -65,7 +68,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
 
     $neu['BASE.FRITZBOX']      = $saeubern($_POST['fritzbox'] ?? 'fritz.box');
     $neu['BASE.FRITZBOX_PORT'] = (string) (int) ($_POST['fritzbox_port'] ?? 49443);
-    $neu['BASE.PORT']          = (string) (int) ($_POST['udpport'] ?? 7007);
+    $neu['BASE.PORT']          = (string) (int) ws_cfg($alt, 'BASE.PORT', '7007');
     if ($neu['BASE.FRITZBOX'] === '')      { $neu['BASE.FRITZBOX'] = 'fritz.box'; }
     if ((int) $neu['BASE.FRITZBOX_PORT'] <= 0) { $neu['BASE.FRITZBOX_PORT'] = '49443'; }
     if ((int) $neu['BASE.PORT'] <= 0)      { $neu['BASE.PORT'] = '7007'; }
@@ -93,6 +96,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         ws_cron_apply($neu['BASE.ENABLED'], $neu['BASE.CRON']);
         $ws_saved = true;
         // Listener neu starten, damit er die geaenderte Konfiguration meldet
+        if (is_file($ws_p['bindir'] . '/mqtt_listener.pl')) {
+            ws_listener_stop();
+            @exec('nohup perl ' . escapeshellarg($ws_p['bindir'] . '/mqtt_listener.pl') . ' > /dev/null 2>&1 &');
+        }
+    } else {
+        $ws_error = sprintf(ws_t('FEHLER.CONFIG_SCHREIBEN'), ws_e($ws_p['config']));
+    }
+}
+
+/* ================= MQTT/Uebertragungsweg speichern (eigener Reiter seit 3.1.7, Hausstandard) ================= */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
+    $neu = ws_config_read();
+    $neu['BASE.UDP_ENABLE'] = ((string) ($_POST['out_way'] ?? 'mqtt') === 'udp') ? '1' : '0';
+    $neu['BASE.PORT'] = (string) (int) ($_POST['udpport'] ?? 7007);
+    if ((int) $neu['BASE.PORT'] <= 0) { $neu['BASE.PORT'] = '7007'; }
+    if (ws_config_write($neu)) {
+        $ws_saved = true;
+        // Listener neu starten, damit er den geaenderten Weg meldet
         if (is_file($ws_p['bindir'] . '/mqtt_listener.pl')) {
             ws_listener_stop();
             @exec('nohup perl ' . escapeshellarg($ws_p['bindir'] . '/mqtt_listener.pl') . ' > /dev/null 2>&1 &');
@@ -152,6 +173,8 @@ $ws_dir = ws_e($ws_p['plugin']);
 .sm-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
 .sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
 .sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
+.sm-hinweis { border: 1px solid #cfe3b0; background: #f2f8ea; border-radius: 6px;
+    padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
 .sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important;
   text-decoration: none; display: inline-block; }
@@ -179,6 +202,11 @@ $ws_dir = ws_e($ws_p['plugin']);
 .sm-punkt.sm-b-lesen   { background: #6dac20; }
 .sm-punkt.sm-b-technik { background: #546e7a; }
 .sm-punkt.sm-b-aktion  { background: #e0620d; }
+
+/* Nachgetragene Definitionen (CSS-Luecken-Durchgang 13.08.2026):
+   benutzt, aber nie definiert - wortgleich aus der Hausstandard-Vorlage
+   bzw. der Referenzimplementierung uebernommen. */
+.sm-warn { background: #fdf3e3; border: 1px solid #e0620d; }
 </style>
 <div class="sm-wrap">
 
@@ -208,7 +236,8 @@ $ws_ein = ws_cfg($ws_cfg, 'BASE.ENABLED', '0') === '1';
  * UND Flaeche; das JavaScript spart nur noch den Seitenaufbau.
  */
 $ws_beschriftung = array(
-    'settings' => 'REITER.EINSTELLUNGEN', 'loxone' => 'REITER.LOXONE',
+    'settings' => 'REITER.EINSTELLUNGEN', 'mqtt' => 'REITER.MQTT',
+    'loxone'   => 'REITER.LOXONE',
     'test'     => 'REITER.TEST',          'log'    => 'REITER.LOG',
 );
 $ws_reiter = array();
@@ -310,6 +339,19 @@ foreach ($ws_reiter_ids as $ws_i) {
 </div>
 </div>
 
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?php echo ws_t('ALLG.SPEICHERN'); ?></button>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo ws_t('LEGENDE.SPEICHERN'); ?></span>
+</div>
+</form>
+</div>
+
+<!-- ================= Reiter: Einbindung in Loxone ================= -->
+<!-- ================= Reiter: MQTT / Uebertragungsweg (eigener Reiter seit 3.1.7, Hausstandard) ================= -->
+<div class="sm-pane<?= $ws_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="mqtt_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <h2><?php echo ws_t('EINST.H_WEG'); ?></h2>
 <div class="sm-row">
 <div>
@@ -326,14 +368,13 @@ foreach ($ws_reiter_ids as $ws_i) {
 </div>
 </div>
 
-<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?php echo ws_t('ALLG.SPEICHERN'); ?></button>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo ws_t('ALLG.SPEICHERN'); ?></button>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?php echo ws_t('LEGENDE.SPEICHERN'); ?></span>
 </div>
 </form>
 </div>
 
-<!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-pane<?php echo $ws_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" id="tab-loxone">
 <h2><?php echo ws_t('REITER.LOXONE'); ?></h2>
 <div class="sm-small">
