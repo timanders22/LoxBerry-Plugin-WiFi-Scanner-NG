@@ -485,3 +485,24 @@ function ws_topic_name($name)
     $t = preg_replace('/[^A-Za-z0-9_-]+/', '_', $t);
     return trim($t, '_');
 }
+
+/** Vorlage der Gateway-Eingaenge nach dem Heimkino-Kunstgriff (12.08.2026):
+ *  VirtualInHttp mit Dummy-Adresse http://localhost und Abfragezyklus 604800 s,
+ *  nur damit Loxone die richtig benannten Eingaenge anlegt - die Werte kommen
+ *  vom MQTT-Gateway. Format wie Original-Export aus Loxone Config 17.1. */
+function ws_vorlage()
+{
+    $cfg = ws_config_read();
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualInHttp HintText="" Title="WifiScanner Anwesenheit" Comment="Erzeugt vom LoxBerry-Plugin WifiScanner-NG (' . date('d.m.Y') . '). Werte kommen vom MQTT-Gateway - Abo wifi_ng/# noetig." Address="http://localhost" PollingTime="604800">' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
+    foreach (ws_users($cfg) as $u) {
+        if ($u['name'] === '') { continue; }
+        $o .= "\t" . '<VirtualInHttpCmd Title="wifi_ng_' . htmlspecialchars(ws_topic_name($u['name']), ENT_QUOTES | ENT_XML1, 'UTF-8') . '" ';
+        $o .= 'Comment="Anwesenheit ' . htmlspecialchars($u['name'], ENT_QUOTES | ENT_XML1, 'UTF-8') . ' (1 = da)" Check=" " ';
+        $o .= 'Signed="false" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="0" MaxVal="1" Unit="&lt;v&gt;" HintText=""/>' . $crlf;
+    }
+    $o .= '</VirtualInHttp>' . $crlf;
+    return array('VI_wifiscanner.xml', $o);
+}

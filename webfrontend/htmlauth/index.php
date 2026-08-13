@@ -104,6 +104,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
 
 $ws_cfg = ws_config_read();
 $ws_users = ws_users($ws_cfg);
+
+// ---------- Loxone-Vorlage herunterladen (Hausstandard) ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage']) && function_exists('ws_vorlage')) {
+    list($ws_vname, $ws_vinhalt) = ws_vorlage();
+    header('Content-Type: application/x-download');
+    header('Content-Disposition: attachment; filename="' . $ws_vname . '"');
+    echo $ws_vinhalt;
+    exit;
+}
 if (!$ws_users) {
     $ws_users = array(array('name' => '', 'macs' => ''));
 }
@@ -186,6 +195,7 @@ $ws_ein = ws_cfg($ws_cfg, 'BASE.ENABLED', '0') === '1';
 &middot; <?php echo ws_t('KOPF.ZEITPLAN'); ?>: <?= $ws_cron !== '' ? ws_e($ws_cron) : '<b>' . ws_t('KOPF.KEINE_VERKNUEPFUNG') . '</b>' ?>
 &middot; <?php echo ws_t('KOPF.LISTENER'); ?>: <?= $ws_pid ? ws_t('ALLG.LAEUFT') : '<b>' . ws_t('ALLG.LAEUFT_NICHT') . '</b>' ?>
 &middot; <?php echo ws_t('KOPF.WEG'); ?>: <b><?= ws_cfg($ws_cfg, 'BASE.UDP_ENABLE', '0') === '1' ? 'UDP' : 'MQTT' ?></b>
+<?php if (!function_exists('ws_hs_autostart')) { function ws_hs_autostart() { $h = getenv('LBHOMEDIR') ?: '/opt/loxberry'; $g = $h . '/config/system/general.json'; if (!is_file($g)) { return null; } $j = json_decode((string) @file_get_contents($g), true); if (!is_array($j) || !isset($j['Mqtt'])) { return null; } return !empty($j['Mqtt']['Gatewayautostart']); } } if (ws_hs_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo ws_t('KOPF.W_AUTOSTART'); ?></div><?php } ?>
 &middot; <?php echo ws_t('KOPF.PERSONEN'); ?>: <b><?= count(ws_users($ws_cfg)) ?></b>
 </div>
 
@@ -234,6 +244,12 @@ foreach ($ws_reiter_ids as $ws_i) {
 </tr>
 <?php } ?>
 </table>
+<h2><?php echo ws_t('ALLG.H_VORLAGE'); ?></h2>
+<div class="sm-hinweis"><?php echo ws_t('ALLG.H_VORLAGE_TEXT'); ?></div>
+<form action="index.php" method="post" style="margin-bottom:14px;">
+  <input data-role="none" type="hidden" name="vorlage" value="1">
+  <button data-role="none" class="sm-btn" type="submit" style="background:#546e7a;"><?php echo ws_t('ALLG.K_VORLAGE'); ?></button>
+</form>
 
 <h2><?php echo ws_t('EINST.H_ZEITPLAN'); ?></h2>
 <div class="sm-row">
