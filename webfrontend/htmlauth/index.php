@@ -44,7 +44,10 @@ $ws_tab = preg_match('/^tab-(' . implode('|', $ws_reiter_ids) . ')$/', $ws_wunsc
     ? $ws_wunsch : 'tab-' . $ws_reiter_ids[0];
 
 /* ================= Speichern ================= */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
+/* Der Vorlage-Knopf sitzt im selben Formular und schickt 'save' mit.
+ * Er soll aber nur die Vorlage liefern, nicht speichern. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])
+    && !isset($_POST['vorlage'])) {
     $alt = ws_config_read();
     $neu = array();
 
@@ -275,10 +278,16 @@ foreach ($ws_reiter_ids as $ws_i) {
 </table>
 <h2><?php echo ws_t('ALLG.H_VORLAGE'); ?></h2>
 <div class="sm-hinweis"><?php echo ws_t('ALLG.H_VORLAGE_TEXT'); ?></div>
-<form action="index.php" method="post" style="margin-bottom:14px;">
-  <input data-role="none" type="hidden" name="vorlage" value="1">
-  <button data-role="none" class="sm-btn" type="submit" style="background:#546e7a;"><?php echo ws_t('ALLG.K_VORLAGE'); ?></button>
-</form>
+<?php /* KEIN eigenes <form> mehr an dieser Stelle: es lag im Einstellungs-
+         formular, und HTML verbietet Formulare im Formular. Der Browser warf
+         es weg - das versteckte Feld "vorlage" gehoerte damit zum AEUSSEREN
+         Formular und wurde bei JEDEM Speichern mitgeschickt. Jedes Speichern
+         der Einstellungen lieferte deshalb zusaetzlich die Vorlagendatei als
+         Download aus. Jetzt traegt der Knopf den Namen selbst; er wird nur
+         gesendet, wenn er wirklich gedrueckt wird. */ ?>
+<div class="sm-knopfreihe" style="margin-bottom:14px;">
+  <button data-role="none" class="sm-btn" type="submit" name="vorlage" value="1" style="background:#546e7a;"><?php echo ws_t('ALLG.K_VORLAGE'); ?></button>
+</div>
 
 <h2><?php echo ws_t('EINST.H_ZEITPLAN'); ?></h2>
 <div class="sm-row">
