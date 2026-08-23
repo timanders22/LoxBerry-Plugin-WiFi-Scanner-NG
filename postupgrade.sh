@@ -12,7 +12,7 @@ ARGV5=$5 # Fifth argument is Base folder of LoxBerry
 #
 # Der alte Pfad benutzte ausserdem $ARGV1 - das ist NICHT der Arbeitsordner,
 # sondern eine zehnstellige Zufallskennung des Installers.
-SICHER="$ARGV5/data/plugins/$ARGV3/upgrade_sicherung"
+SICHER="$ARGV5/data/plugins/$ARGV3.upgrade_sicherung"
 if [ -d "$SICHER" ]; then
     echo "<INFO> Copy back existing config files"
     cp -p -r "$SICHER/config/." "$ARGV5/config/plugins/$ARGV3/" 2>/dev/null
