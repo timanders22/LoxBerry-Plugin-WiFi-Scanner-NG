@@ -59,6 +59,30 @@ Wesentliche Aenderungen:
          wifiscanner/... hoert, muss nachgezogen werden.
 
 
+  3.1.12 Merkwort der Anlage (BASE.TOKEN), Wachposten gegen fremde Absender,
+         eigener Endpunkt unter webfrontend/html/ mit ?selftest=1, Lebenszeichen
+         ueber wifi_ng/status/ok, /ts, /zaehler und /listener, Zustandsabbild
+         unter data/plugins/<ordner>/zustand.json, optionale Zugangsdaten fuer
+         die Fritz!Box, Waechter fuer den MQTT-Listener, Selbstpruefung im
+         Reiter Test. Behoben: der Sichern-Knopf lieferte keine Datei
+         (Kopfzeilen zu spaet), eine Befehlseinschleusung ueber das Adressfeld
+         (system() ohne Shell und Adresspruefung an beiden Enden), das
+         Zurueckspielen pruefte nur die Schluessel und nicht die Werte, zwei
+         Sicherungsdateien ueberlebten die Deinstallation. Einzelheiten in
+         README.md.
+
+         VERSCHOBEN: webfrontend/htmlauth/ws_lib.php liegt jetzt unter
+         webfrontend/html/ws_lib.php - der neue Endpunkt braucht sie, und
+         installiert sind html/ und htmlauth/ zwei getrennte Baeume.
+
+         NEU: webfrontend/html/index.php (Endpunkt fuer den Miniserver).
+
+         check.pl laedt File::HomeDir, LWP::Simple, Cwd und POSIX nicht mehr -
+         keiner der vier Namen kam ausserhalb seiner use-Zeile vor. In dpkg/apt
+         entfielen libio-all-lwp-perl und libgetopt-long-descriptive-perl,
+         hinzu kam net-tools (arp ist auf Debian 12/13 nicht mehr ab Werk da).
+
+
 Marken
 ------
 Fritz!Box ist eine Marke der AVM GmbH. Dieses Plugin steht in keiner

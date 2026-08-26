@@ -1,64 +1,28 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
-      <stop offset="0%" stop-color="#7dc424" />
-      <stop offset="65%" stop-color="#6dac20" />
-      <stop offset="100%" stop-color="#568819" />
-    </radialGradient>
-    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
-      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
-    </filter>
-  </defs>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="WiFi Scanner NG">
+  <!--
+    Hausvorgabe fuer Plugin-Symbole:
+      runde Scheibe randfuellend #6dac20, FLACH - keine Verlaeufe, keine Schatten
+      zweiter Ring r=232, weiss, stroke-opacity 0.28, stroke-width 6
+      Motiv in Weiss, innerhalb r etwa 200 (x,y = 60 bis 452)
+      Strichstaerken nicht unter 14 Einheiten
+      keine Schrift
 
-  <!-- Outer Badge Ring -->
-  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
-  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+    Bis 3.1.11 trug dieses Symbol einen Farbverlauf (fill="url(#bg-grad)"),
+    eine gestrichelte Linie, Strichstaerken von 3 und 4 - und die beiden
+    Schriftzuege "WiFi Scanner" und "LOXBERRY". LoxBerry zeigt das Symbol im
+    Menue mit 64 Pixeln Kantenlaenge; bei dieser Groesse war von der Schrift
+    ein grauer Balken uebrig und von den duennen Linien nichts.
 
-  <g filter="url(#shadow)" fill="#ffffff">
-    <!-- Main Center Icon: Smartphone Emitting WiFi Scanning Waves -->
-    <!-- Smartphone Body -->
-    <rect x="216" y="120" width="80" height="155" rx="14" fill="#ffffff" />
-    <!-- Screen Cutout -->
-    <rect x="223" y="134" width="66" height="112" rx="7" fill="#6dac20" />
-    <!-- Speaker & Button -->
-    <rect x="245" y="126" width="22" height="3" rx="1.5" fill="#6dac20" />
-    <circle cx="256" cy="260" r="4.5" fill="#6dac20" />
+    Motiv: eine Person in Funkwellen - das ist es, was das Plugin misst.
+  -->
+  <circle cx="256" cy="256" r="256" fill="#6dac20"/>
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.28" stroke-width="6"/>
 
-    <!-- Person Silhouette inside Smartphone Screen (Anwesenheitserkennung) -->
-    <circle cx="256" cy="162" r="12" fill="#ffffff" />
-    <path d="M 235 200 C 235 180 277 180 277 200 L 277 212 L 235 212 Z" fill="#ffffff" />
-
-    <!-- WiFi Scanning Radar Arcs (Radiating from Smartphone) -->
-    <!-- Left Arcs -->
-    <path d="M 198 162 A 50 52 0 0 0 198 232" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" />
-    <path d="M 178 145 A 72 74 0 0 0 178 249" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" opacity="0.8" />
-    <path d="M 158 128 A 94 96 0 0 0 158 266" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" opacity="0.5" />
-
-    <!-- Right Arcs -->
-    <path d="M 314 162 A 50 52 0 0 1 314 232" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" />
-    <path d="M 334 145 A 72 74 0 0 1 334 249" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" opacity="0.8" />
-    <path d="M 354 128 A 94 96 0 0 1 354 266" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" opacity="0.5" />
-
-    <!-- Flanking Left Symbol: Person Presence -->
-    <g transform="translate(102, 150)">
-      <circle cx="0" cy="0" r="22" fill="#ffffff" />
-      <circle cx="0" cy="-6" r="6" fill="#6dac20" />
-      <path d="M -10 11 C -10 2 10 2 10 11 Z" fill="#6dac20" />
-    </g>
-
-    <!-- Flanking Right Symbol: Smart Home / Loxone Control -->
-    <g transform="translate(410, 150)">
-      <circle cx="0" cy="0" r="22" fill="#ffffff" />
-      <path d="M -9 2 L 0 -7 L 9 2 L 9 9 C 9 10.5 7.5 11 6 11 L -6 11 C -7.5 11 -9 10.5 -9 9 Z" fill="#6dac20" />
-      <rect x="-3" y="4" width="6" height="7" fill="#ffffff" />
-    </g>
-
-    <!-- Dashed Line -->
-    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
+  <g fill="none" stroke="#ffffff" stroke-width="18" stroke-linecap="round">
+    <path d="M195 203 A 86 86 0 0 1 317 203"/>
+    <path d="M161 169 A 134 134 0 0 1 351 169"/>
   </g>
 
-  <!-- Typography -->
-  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">WiFi Scanner</text>
-  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
+  <circle cx="256" cy="264" r="42" fill="#ffffff"/>
+  <path d="M176 396 c0-44 36-80 80-80 s80 36 80 80 z" fill="#ffffff"/>
 </svg>

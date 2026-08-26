@@ -46,13 +46,24 @@ if [ -f "$LISTENER" ]; then
     chmod +x "$LISTENER"
     # Gezielt ueber die Befehlszeile, argumentweise: "pkill -f" traefe auch
     # einen Editor mit offener Datei oder ein zweites Exemplar des Plugins.
+    #
+    # Auf das Ende WARTEN, bevor der neue startet. Bis 3.1.11 folgte der
+    # Start unmittelbar auf das kill - der alte Prozess haengt dann noch am
+    # Broker, und zwei Listener beantworten jeden Befehl doppelt. In
+    # postupgrade.sh war genau das seit 2.5.2 behoben; hier stand weiter der
+    # alte Ablauf. Ein Widerspruch in der eigenen Datei ist eine Fehlerquelle.
     for D in /proc/[0-9]*; do
         P=$(basename "$D")
         if tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null | head -2 | grep -qxF "$LISTENER"; then
             kill "$P" 2>/dev/null
+            for i in 1 2 3 4 5; do
+                kill -0 "$P" 2>/dev/null || break
+                sleep 1
+            done
+            kill -9 "$P" 2>/dev/null
         fi
     done
-    nohup "$LISTENER" > /dev/null 2>&1 &
+    nohup perl "$LISTENER" > /dev/null 2>&1 &
 fi
 
 # Exit with Status 0
@@ -112,6 +123,6 @@ netz_zurueck() {
     fi
 }
 netz_zurueck "mqtt_subscriptions.cfg" "8e8f8a5e3c6ba7c6fbfe7d6fed9f81f663067d3964501f51ad051cd65d6d5d98"
-netz_zurueck "wifi_scanner.cfg" "65cd35264fe46964f963ba876c3905207946052c4e41bb5ffc8a11cebaec3e36"
+netz_zurueck "wifi_scanner.cfg" "30bcb5717482b3b0aa670ce91a023ab7100fac5db98d0e271e879555a541fc3a"
 
 exit 0

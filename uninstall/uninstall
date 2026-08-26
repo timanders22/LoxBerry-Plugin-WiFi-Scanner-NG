@@ -85,9 +85,46 @@ echo "<INFO> Anwesenheit vom Tag der Deinstallation."
 # Namen aller ueberwachten Personen - eine Anwesenheitsliste des
 # Haushalts. Die gehoert nicht auf eine Karte, von der jemand
 # glaubt, das Plugin sei entfernt.
-BK="$BASE/config/plugins/$PDIR.wifi_scanner.backup"
-if [ -f "$BK" ]; then
-    rm -f "$BK" && echo "<OK> Sicherung entfernt: $PDIR.wifi_scanner.backup"
+#
+# SEIT 3.1.12 steht in diesen Dateien zusaetzlich das Merkwort der Anlage
+# und - wenn eingetragen - das Kennwort der Fritz!Box. Sie werden deshalb
+# ueberschrieben, BEVOR sie geloescht werden. Das ist keine sichere
+# Loeschung: auf einer SD-Karte mit Wear-Leveling und einem
+# journalfuehrenden Dateisystem kann der alte Block liegen bleiben. Es
+# erschwert das Wiederfinden, mehr wird hier nicht behauptet.
+#
+# ES SIND DREI DATEIEN, nicht eine. Bis 3.1.11 wurde nur die erste
+# abgeraeumt; die beiden Zweitschriften aus preupgrade.sh blieben liegen -
+# mit den Namen und MAC-Adressen aller ueberwachten Personen, also einer
+# Anwesenheitsliste des Haushalts, auf einer Karte, von der jemand glaubt,
+# das Plugin sei entfernt.
+WEG=0
+for BK in "$BASE/config/plugins/$PDIR.wifi_scanner.backup" \
+          "$BASE/config/plugins/$PDIR.backup.wifi_scanner.cfg" \
+          "$BASE/config/plugins/$PDIR.backup.mqtt_subscriptions.cfg"; do
+    if [ -f "$BK" ]; then
+        dd if=/dev/zero of="$BK" bs=1024 count=8 conv=notrunc 2>/dev/null
+        if rm -f "$BK"; then
+            WEG=$((WEG + 1))
+            echo "<OK> Sicherung ueberschrieben und entfernt: $(basename "$BK")"
+        else
+            echo "<WARNING> $(basename "$BK") liess sich nicht entfernen."
+        fi
+    fi
+done
+# Nachzaehlen statt melden: eine Erfolgsmeldung, die niemand geprueft hat,
+# ist eine Behauptung.
+UEBRIG=0
+for BK in "$BASE/config/plugins/$PDIR.wifi_scanner.backup" \
+          "$BASE/config/plugins/$PDIR.backup.wifi_scanner.cfg" \
+          "$BASE/config/plugins/$PDIR.backup.mqtt_subscriptions.cfg"; do
+    [ -f "$BK" ] && UEBRIG=$((UEBRIG + 1))
+done
+if [ "$UEBRIG" -gt 0 ]; then
+    echo "<WARNING> $UEBRIG Sicherungsdatei(en) liegen noch unter"
+    echo "<WARNING> $BASE/config/plugins/ und muessen von Hand entfernt werden."
+elif [ "$WEG" -eq 0 ]; then
+    echo "<INFO> Es lagen keine Sicherungsdateien neben dem Konfigordner."
 fi
 
 

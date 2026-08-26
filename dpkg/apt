@@ -1,14 +1,41 @@
 # These packages will be installed by apt-get -y install PACKAGENAME
 # One line per package, use exact packagename as you would do for apt-get.
 #
-libjson-perl
-libxml-simple-perl
-libio-all-lwp-perl
-libgetopt-long-descriptive-perl
+# Die Liste ist am 26.08.2026 gegen die use-Zeilen von bin/check.pl und
+# bin/mqtt_listener.pl nachgezaehlt worden. Drei Pakete standen darin, die
+# kein Skript braucht (libio-all-lwp-perl, libgetopt-long-descriptive-perl
+# und - bis check.pl JSON wirklich benutzte - libjson-perl); ein Paket
+# fehlte, obwohl check.pl das Programm aufruft: net-tools.
+
+# --- Programme, die check.pl aufruft ---
+# arp steckt in net-tools und ist auf Debian 12/13 NICHT mehr ab Werk
+# installiert. Ohne das Paket faellt der Zwischenspeicher ueber die
+# ARP-Tabelle aus und jede Suche geht ueber arp-scan - langsamer, und die
+# Diagnose im Reiter Test meldet /usr/sbin/arp als fehlend.
+net-tools
 arping
 arp-scan
-libnet-mqtt-simple-perl
-libdata-validate-ip-perl
-libcapture-tiny-perl
-libconfig-simple-perl
+
+# --- Perl-Module, die beide Skripte laden ---
+# LWP::UserAgent (Fritz!Box ueber TR-064)
 libwww-perl
+# XML::Simple (Antwort der Fritz!Box)
+libxml-simple-perl
+# JSON (Zustandsabbild fuer die Oberflaeche, seit 3.1.12)
+libjson-perl
+# Net::MQTT::Simple
+libnet-mqtt-simple-perl
+# Data::Validate::IP (Adresspruefung)
+libdata-validate-ip-perl
+# Capture::Tiny (Ausgabe der Werkzeuge einfangen, ohne Shell)
+libcapture-tiny-perl
+# Config::Simple
+libconfig-simple-perl
+
+# Nicht aufgefuehrt, weil Bestandteil von Perl selbst: Getopt::Long, Fcntl,
+# IO::Socket, POSIX. Und File::HomeDir steht hier bewusst NICHT: check.pl
+# hat das Modul bis 3.1.11 geladen, ohne es je zu benutzen - das Paket
+# libfile-homedir-perl fehlte in dieser Liste, und auf einem System ohne das
+# Modul waere check.pl beim Start gestorben, vor der ersten Protokollzeile.
+# Aufgeloest wurde das nicht durch Nachtragen des Pakets, sondern durch
+# Streichen der use-Zeile.

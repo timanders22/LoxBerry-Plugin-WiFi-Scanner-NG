@@ -126,6 +126,214 @@ Beim Speichern legt das Plugin eine Kopie neben dem Konfigordner ab
 (`config/plugins/<ordner>.wifi_scanner.backup`), damit die Einstellungen eine
 Neuinstallation überstehen. Das Deinstallieren entfernt sie seit 2.5.2 wieder.
 
+## Version 3.2.0 — Merkwort, eigener Endpunkt, Lebenszeichen
+
+Aus einer Zeile-für-Zeile-Durchsicht am 26.08.2026. Was **gemessen** wurde,
+steht dabei; was nur gelesen wurde, ist als solches gekennzeichnet.
+
+### Neu
+
+**Ein Merkwort für die Anlage.** Bis 3.1.11 stand im Quelltext und im Warntext
+am Sicherungsknopf, die Sicherungsdatei trage „das Aktionstoken" — der
+Baustein war wörtlich aus einem anderen Plugin übernommen, das Merkwort aber
+nicht mitgekommen. In derselben Sprachdatei stand deshalb an einer Stelle
+*„Die Datei enthält Ihre Zugangsdaten"* und an der anderen *„Das Plugin
+speichert keine Zugangsdaten"*. Recht hatte die zweite. Jetzt gibt es
+`BASE.TOKEN`, beim ersten Öffnen der Oberfläche einmal erzeugt.
+
+**Ein Wachposten gegen fremde Absender.** `htmlauth/` schützt gegen den
+unangemeldeten Aufruf, nicht dagegen, dass der Browser eines angemeldeten
+Bedieners ein Formular abschickt, das auf einer fremden Seite steht. Bis
+3.1.11 genügte ein `<img src=".../ws_test.php?restart">`, um den Dienst neu
+zu starten. Jetzt trägt jedes Formular ein aus dem Merkwort abgeleitetes
+Merkmal, und **eine** zentrale Prüfung vor allen Handlern entwaffnet einen
+POST ohne gültiges Merkmal — damit ist jeder künftig ergänzte Handler
+mitgeschützt.
+
+**Ein eigener Endpunkt für Loxone** unter `webfrontend/html/`. Wer kein
+MQTT-Gateway fährt, hatte bisher gar keinen Rückkanal. Die fertigen Adressen
+stehen im Reiter *Einbindung in Loxone* zum Abschreiben:
+
+```
+/plugins/wifi_ng/index.php                      Antwortzeile, ohne Merkwort
+/plugins/wifi_ng/index.php?json=1               dasselbe als JSON
+...?token=<TOKEN>&aktion=scan                   Sofort-Scan
+...?token=<TOKEN>&aktion=enable&wert=0|1        periodisches Suchen
+...?token=<TOKEN>&aktion=interval&wert=<n>      Takt in Minuten
+...?token=<TOKEN>&aktion=mode&wert=0|1|2        Suchweg
+...?selftest=1&token=<TOKEN>                    Selbsttest
+```
+
+**Ein Lebenszeichen.** Das ist bei einem Anwesenheitsplugin der wichtigste
+Zugewinn. Ein virtueller Eingang behält seinen letzten Wert — retained sogar
+über jeden Neustart des Miniservers hinweg. Stirbt `check.pl` oder fällt der
+Cron aus, steht in Loxone weiter die Anwesenheit vom Zeitpunkt des Ausfalls.
+Das ist keine fehlende Auskunft, das ist eine Falschaussage, und niemand
+merkt sie. Neu gehen deshalb hinaus:
+
+| Thema | Bedeutung |
+|---|---|
+| `wifi_ng/status/ok` | 1 = der letzte Lauf hat wirklich gemessen |
+| `wifi_ng/status/ts` | Zeitstempel des letzten Laufs (Unix-Sekunden) |
+| `wifi_ng/status/zaehler` | läuft 0…999 um — erkennt einen stehenden Takt auch dann, wenn die Uhr gesprungen ist |
+| `wifi_ng/status/listener` | ob der MQTT-Listener läuft, von `check.pl` **gemessen**, nicht vom Listener behauptet |
+
+Über UDP gehen `wifi_ok:` und `wifi_ts:` mit hinaus. **Legen Sie `OK` mit auf
+eine Überwachung** — ein festgefrorenes „alle zu Hause" sieht sonst genauso
+aus wie ein richtiges.
+
+**Wer gerade da ist, steht in der Oberfläche.** `check.pl` legt sein Ergebnis
+als Abbild unter `data/plugins/<ordner>/zustand.json` ab; der Reiter
+*Einstellungen* zeigt es als Kachelreihe, mit dem Weg, über den die Person
+gefunden wurde.
+
+**Zugangsdaten für die Fritz!Box** (`FRITZBOX_USER`, `FRITZBOX_PASS`), **ab
+Werk leer** — dann verhält sich das Plugin wie bisher und fragt die Box ohne
+Anmeldung. In der Anzeige (`?config`) sind Merkwort und Kennwort maskiert.
+
+> **Am Gerät gemessen (26.08.2026), FRITZ!Box 7690 mit FRITZ!OS 8.25:** die
+> Box beantwortet `GetSpecificHostEntry` **ohne Anmeldung**. `tr64desc.xml`
+> kommt mit HTTP 200, der Dienst `Hosts1` wird angeboten, und für eine
+> erfundene MAC antwortet die Box mit `714 NoSuchEntryInArray` — sie hat die
+> Anfrage also verarbeitet. `GetHostNumberOfEntries` liefert ebenfalls
+> (49 bekannte Hosts).
+>
+> Die Gegenprobe an derselben Box macht das erst belastbar:
+> `DeviceInfo#GetInfo` und `DeviceConfig#GetPersistentData` antworten mit
+> **401 Unauthorized**. Die Box *kann* abweisen — beim Hosts-Dienst tut sie
+> es nur nicht.
+>
+> Die beiden Felder werden hier also **nicht gebraucht**. Sie bleiben
+> trotzdem eingebaut: sie kosten leer nichts, und sie greifen dort, wo eine
+> andere Box oder eine andere Einstellung den Zugriff doch schließt. Der
+> Hinweis darauf erscheint dann im Protokoll, und zwar **einmal** und nicht
+> je Gerät — sagt die Box 401, sagt sie es für alle.
+
+**Ein Wächter für den MQTT-Listener.** `check.pl` startet ihn nach, wenn MQTT
+der gewählte Weg ist und nachweislich keiner läuft. Fail safe: im Zweifel
+passiert nichts.
+
+**Eine Selbstprüfung im Reiter Test** — zehn Fragen mit drei Ausgängen (ja,
+nein, *hier konnte nichts gemessen werden*). Ein Strich zählt nicht als
+bestanden und wird in der Bilanz getrennt genannt.
+
+### Behoben
+
+**Der Sichern-Knopf lieferte keine Datei.** Der Download-Block stand hinter
+`LBWeb::lbheader()`; der Kopf war damit schon geschrieben. Statt einer Datei
+bekam man eine HTML-Seite mit zwei *„headers already sent"*-Warnungen und dem
+JSON mittendrin. Am laufenden Webserver gemessen — und drei Prüfwerkzeuge
+hatten das Plugin dafür grün gemeldet, weil sie den Bauplan prüfen und nicht
+die Wirkung an einer Seite mit Rahmen.
+
+**Befehlseinschleusung über das Adressfeld.** `check.pl` hielt alles, was
+nicht wie eine MAC-Adresse aussah, für eine IP-Adresse und setzte es
+unverändert in `system("sudo arping … $ip")` ein — einen String, also über
+`/bin/sh`. Ein `$(befehl)` im Adressfeld wurde ausgeführt. Jeder Aufruf läuft
+jetzt als Liste ohne Shell, und jede Adresse wird an beiden Enden geprüft.
+
+**Das Zurückspielen nahm jeden Wert an.** Die Prüfung sah nur die
+*Schlüssel* an. Eine Sicherung, die einen Zeilenumbruch und einen fremden
+Abschnitt in den Wert von `BASE.FRITZBOX` legte, wurde übernommen und mit
+„Gespeichert." quittiert; danach stand der fremde Abschnitt in der
+Konfigurationsdatei. Jetzt wird jeder Wert geprüft, und eine Datei mit auch
+nur einem falschen Wert ändert **gar nichts**.
+
+**Nach dem Zurückspielen stimmte weder Meldung noch Anzeige.** Zeitplan und
+Listener wurden nicht nachgezogen, während die Meldung behauptete, beides sei
+geschehen; die Formularfelder zeigten weiter die alten Werte; und die eigens
+gebaute Meldung „N Werte übernommen" wurde nie angezeigt.
+
+**Die Warnung zur Sicherungsdatei hatte keinen Kasten.** Das HTML benutzte
+`class="sm-warnung"`, das Stylesheet kannte nur `sm-warn`. Die einzige
+Warnung des Plugins stand als nackter Fließtext da.
+
+**Bei aktivem Scan wurde zweimal gesendet, und das erste Mal falsch.** War die
+Fritz!Box-Abfrage eingeschaltet *und* der aktive Scan, und wurde dabei
+mindestens eine Person gefunden, sendete das Skript zuerst das halbe Ergebnis
+— alle, die die Box nicht kannte, als `0` — und gleich darauf das richtige.
+In Loxone kam damit bei jedem Lauf eine 0-nach-1-Flanke an, die es nie gab.
+
+**Die Zweitschriften überlebten die Deinstallation.**
+`config/plugins/<ordner>.backup.wifi_scanner.cfg` und
+`.backup.mqtt_subscriptions.cfg` blieben liegen — mit den Namen und
+MAC-Adressen aller überwachten Personen, also einer Anwesenheitsliste des
+Haushalts. `uninstall` überschreibt und löscht jetzt alle drei
+Sicherungsdateien und zählt nach.
+
+**`File::HomeDir` wurde geladen, ohne benutzt zu werden** — und das zugehörige
+Paket stand nicht in `dpkg/apt`. Ohne das Modul wäre `check.pl` beim Start
+gestorben, vor der ersten Protokollzeile. Aufgelöst nicht durch Nachtragen
+des Pakets, sondern durch Streichen der `use`-Zeile; dasselbe für
+`LWP::Simple`, `Cwd` und `POSIX`. Umgekehrt fehlte **`net-tools`**, obwohl
+`check.pl` `arp` aufruft — auf Debian 12/13 ist es nicht mehr ab Werk dabei.
+
+**`update_cron()` im Listener war der Rückbau dessen, was die Oberfläche
+ausdrücklich anders macht**: siebenmal `unlink`, dann `ln -s` als
+Zeichenkette. Beide Stellen überschreiben den gewählten Takt jetzt mit
+`ln -sfn`. Ebenso `postinstall.sh`: dort fehlte das Warten auf das Ende des
+alten Listeners, das `postupgrade.sh` seit 2.5.2 hat.
+
+**`?scan` und `?restart` waren Aktionen über GET-Verweise.** Sie sitzen jetzt
+als POST mit Merkmal im Reiter Test; `ws_test.php` fragt nur noch ab.
+
+**`use strict` in `check.pl`** — 2.5.2 hatte es zurückgestellt, weil es keinen
+Prüfaufbau gab. Den gibt es inzwischen (`Werkzeuge/perl_attrappe`), und die
+Prüfung ist in beide Richtungen geeicht: mit `use strict` wird ein
+Tippfehler in einem Variablennamen zum Compile-Fehler, ohne bleibt er eine
+Warnung, und die Datei gilt als *syntax OK*.
+
+**Weiteres:** Log-Kappung (ab 500 kB die letzten 200 Zeilen — `log/plugins`
+liegt auf einer Ramdisk); nicht blockierende Sperre gegen zwei gleichzeitige
+Läufe (ein übersprungener Lauf ist **kein** Fehler); `Config::Simple->new`
+wird an allen Stellen auf `undef` geprüft; Zeitschranke für den
+Fritz!Box-Abruf; eine gescheiterte Box-Abfrage bricht den Lauf nicht mehr ab,
+sondern überlässt das Ergebnis dem aktiven Scan.
+
+### Oberfläche
+
+Der Hausstandard ist nachgezogen: `.sm-seite` statt `.sm-pane`, `?form=`
+statt `?tab=`, die fehlenden Klassen `.sm-warnung`, `.sm-breit`,
+`.sm-kacheln`, `.sm-an`/`.sm-aus`, `.sm-feld`, `.sm-hilfe`, `.sm-pre`;
+Auswahlfelder mit selbst gezeichnetem Pfeil; `data-role="none"` auch an den
+Verweisknöpfen; die Personentabelle in `.sm-breit`, weil sie Eingabefelder
+trägt.
+
+Die Personenzeilen tragen **ausgeschriebene Indizes und den ursprünglichen
+Abschnittsnamen**; gelöscht wird über einen Haken. Bis 3.1.11 wurde eine
+Zeile ohne Namen oder ohne Adresse stillschweigend verworfen — wer nur den
+Namen berichtigen wollte und ihn dabei kurz leerte, verlor die ganze
+Adressliste ohne eine einzige Meldung. Neu ist außerdem eine Meldung, wenn
+dieselbe Adresse bei zwei Personen steht: dann gilt die zweite immer als
+anwesend, sobald die erste zu Hause ist.
+
+**Der Abo-Hinweis richtet sich nach der Gateway-Fassung.**
+`Mqtt.Gatewayversion` wird aus `general.json` gelesen — bei V1 steht der
+Pflichtsatz *„Ohne diesen Eintrag kommt am Miniserver nichts an"*, bei V2 der
+Hinweis, dass dort nichts einzutragen ist, und wenn die Fassung nicht lesbar
+ist, **beide**: einen von beiden zu behaupten wäre für die Hälfte der Anlagen
+falsch.
+
+**Das Symbol** folgt der Hausvorgabe: flache Scheibe statt Farbverlauf, keine
+Schriftzüge (bei 64 px war davon ein grauer Balken übrig), Strichstärken über
+14 Einheiten.
+
+### Ort der Bibliothek
+
+`ws_lib.php` liegt jetzt unter `webfrontend/html/`, nicht mehr unter
+`webfrontend/htmlauth/`. Installiert sind das zwei getrennte Bäume, und ein
+`require` über `..` trifft nur das ausgepackte Archiv; die Oberfläche holt
+die Bibliothek über eine Kandidatenliste.
+
+### Was nicht geprüft werden konnte
+
+Die Frage nach der Fritz!Box ist inzwischen **am Gerät gemessen** (siehe
+oben). Offen bleibt einer:
+
+* **Unter welchem Benutzer der LoxBerry-Cron `check.pl` startet.** Davon
+  hängt ab, wie weit die behobene Befehlseinschleusung gereicht hätte — an
+  der Korrektur ändert es nichts.
+
 ## Version 2.5.2 — nachgemessen und korrigiert
 
 Fünfzehn Punkte aus einer Durchsicht. Elf trafen zu, zwei teilweise, zwei
