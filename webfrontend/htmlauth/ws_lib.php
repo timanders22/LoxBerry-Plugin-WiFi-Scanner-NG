@@ -506,3 +506,68 @@ function ws_vorlage()
     $o .= '</VirtualInHttp>' . $crlf;
     return array('VI_wifiscanner.xml', $o);
 }
+
+
+/**
+ * Die Vorgaben des Abschnitts BASE - gemessen an der mitgelieferten
+ * config/wifi_scanner.cfg und an den Stellen, die in index.php einen
+ * Ersatzwert setzen.
+ */
+function ws_vorgaben()
+{
+    return array(
+        'BASE.PORT'            => '7007',
+        'BASE.FRITZBOX_ENABLE' => '1',
+        'BASE.FRITZBOX'        => 'fritz.box',
+        'BASE.FRITZBOX_PORT'   => '49443',
+        'BASE.USERS'           => '0',
+        'BASE.CRON'            => '3',
+        'BASE.ENABLED'         => '0',
+        'BASE.ACTIVE_SCAN'     => '1',
+        'BASE.USE_CACHE'       => '1',
+        'BASE.UDP_ENABLE'      => '1',
+        'BASE.PING_CMD'        => '0',
+    );
+}
+
+/**
+ * Eine Sicherungsdatei einlesen - mit einer Besonderheit dieser Linie.
+ *
+ * Die Konfiguration hat NICHT nur feste Schluessel: neben [BASE] traegt sie
+ * je erfasster Person einen Abschnitt [USER1], [USER2], ... mit NAME und
+ * MACS. Eine feste Liste wuerde USER2.NAME als "fremd" abweisen - und damit
+ * genau die Sicherung ablehnen, die man zurueckspielen will.
+ *
+ * Deshalb gilt ein Schluessel als bekannt, wenn er entweder in ws_vorgaben()
+ * steht oder der Form USER<zahl>.NAME beziehungsweise USER<zahl>.MACS
+ * entspricht. Alles andere ist eine Beanstandung, und eine Beanstandung
+ * heisst: es wird GAR NICHTS uebernommen.
+ *
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ */
+function ws_sicherung_lesen($roh)
+{
+    $mangel = array();
+    $daten = json_decode((string) $roh, true);
+    if (!is_array($daten)) {
+        return array(null, array(ws_t('EINST.SICH_KEIN_JSON')), 0);
+    }
+    $neu = ws_vorgaben();
+    $bekannt = array_keys($neu);
+    $anzahl = 0;
+    foreach ($daten as $k => $w) {
+        $ok = in_array($k, $bekannt, true)
+              || preg_match('/^USER[0-9]+[.](NAME|MACS)$/', (string) $k) === 1;
+        if (!$ok) {
+            $mangel[] = sprintf(ws_t('EINST.SICH_FREMD'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        $neu[$k] = $w;
+        $anzahl++;
+    }
+    if ($anzahl === 0) {
+        $mangel[] = ws_t('EINST.SICH_LEER');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl);
+}
