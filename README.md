@@ -126,6 +126,61 @@ Beim Speichern legt das Plugin eine Kopie neben dem Konfigordner ab
 (`config/plugins/<ordner>.wifi_scanner.backup`), damit die Einstellungen eine
 Neuinstallation überstehen. Das Deinstallieren entfernt sie seit 2.5.2 wieder.
 
+## Version 3.2.2 — ein Paketname, der die ganze Liste mitgerissen hätte
+
+Betrifft nur die **Neuinstallation** auf LoxBerry 3 und auf LoxBerry 4 unter
+Debian 12. Wer das Plugin bereits laufen hat, merkt von dieser Fassung nichts.
+
+`dpkg/apt` führte bis 3.2.1 das Paket **`libnet-mqtt-simple-perl`**. Gemessen am
+13.09.2026 über packages.debian.org, alle Suites:
+
+| Suite | `libnet-mqtt-simple-perl` |
+|---|---|
+| bullseye (LoxBerry 3) | — |
+| bookworm (LoxBerry 4) | — |
+| trixie | 1.29-2 |
+| forky / sid | 1.33-1 |
+
+Auf zwei von drei Zielsystemen gibt es das Paket also gar nicht. Gebraucht wird
+es ohnehin nicht: LoxBerry liefert `Net::MQTT::Simple` selbst mit, in
+`libs/perllib/Net/MQTT/Simple.pm`, derzeit **Fassung 1.32** — neuer als die
+1.29, die Trixie installieren würde. Es ist dieselbe Ablage, aus der beide
+Skripte `LoxBerry::System` laden; wo das auflöst, löst auch
+`Net::MQTT::Simple` auf.
+
+**Der eigentliche Schaden lag woanders.** `plugininstall.pl` hängt *alle* Zeilen
+aus `dpkg/apt` zu einer Zeichenkette zusammen (Z. 1240–1247) und übergibt sie in
+**einem** Aufruf an `apt_install` (Z. 1259). `apt-get` bricht bei einem
+unbekannten Paketnamen ab, **bevor** es irgendetwas installiert:
+
+```
+$ apt-get install -s -y <unbekannt> libjson-perl arping
+E: Unable to locate package <unbekannt>
+Rückgabewert 100 — kein einziges "Inst"
+
+$ apt-get install -s -y libjson-perl arping
+7 × Inst
+```
+
+Auf bullseye und bookworm wären damit auch `net-tools`, `arping`, `arp-scan`
+und sämtliche Perl-Module ausgefallen. Die Installation hätte Erfolg gemeldet,
+und der Scanner hätte kein einziges Werkzeug gehabt — `arp` fehlt, `arp-scan`
+fehlt, und die Diagnose im Reiter *Test* hätte alles als fehlend aufgeführt.
+
+Gefunden hat das **Dominik Holland** im Review zu
+[Gagi2k/LoxBerry-Plugin-WifiScanner#13](https://github.com/Gagi2k/LoxBerry-Plugin-WifiScanner/pull/13)
+am 08.08.2026. Hier ist der Befund zunächst liegen geblieben: die Nachzählung
+der Paketliste am 26.08.2026 hat ihn nicht aufgegriffen, obwohl sie genau diese
+Datei durchgegangen ist.
+
+Für den Fall, dass später einmal ein Paket gebraucht wird, das es nur auf einer
+Debian-Fassung gibt: `plugininstall.pl` bevorzugt `dpkg/apt<debian_version>`,
+wenn diese Datei existiert (Z. 1215–1220) — also `dpkg/apt11`, `apt12`,
+`apt13`. Damit lässt sich ein Paket auf eine Fassung beschränken, ohne die
+übrigen zu gefährden.
+
+Sonst nur die Fassungsnummer.
+
 ## Version 3.2.0 — Merkwort, eigener Endpunkt, Lebenszeichen
 
 Aus einer Zeile-für-Zeile-Durchsicht am 26.08.2026. Was **gemessen** wurde,

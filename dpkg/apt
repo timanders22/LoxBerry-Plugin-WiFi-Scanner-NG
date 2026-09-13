@@ -23,14 +23,47 @@ libwww-perl
 libxml-simple-perl
 # JSON (Zustandsabbild fuer die Oberflaeche, seit 3.1.12)
 libjson-perl
-# Net::MQTT::Simple
-libnet-mqtt-simple-perl
 # Data::Validate::IP (Adresspruefung)
 libdata-validate-ip-perl
 # Capture::Tiny (Ausgabe der Werkzeuge einfangen, ohne Shell)
 libcapture-tiny-perl
 # Config::Simple
 libconfig-simple-perl
+
+# Net::MQTT::Simple steht hier bewusst NICHT - ENTFERNT 13.09.2026 (3.2.2).
+#
+# Bis 3.2.1 stand libnet-mqtt-simple-perl in dieser Liste. Zwei Gruende, und
+# der zweite ist der schwerwiegende:
+#
+# 1. Das Paket gibt es auf zwei von drei Zielsystemen gar nicht. Gemessen am
+#    13.09.2026 ueber packages.debian.org, alle Suites: es liegt in trixie
+#    (1.29-2), forky und sid - in bullseye (LoxBerry 3) und in bookworm
+#    (LoxBerry 4) null Treffer. LoxBerry liefert das Modul ohnehin selbst mit,
+#    in libs/perllib/Net/MQTT/Simple.pm, derzeit Fassung 1.32 - also neuer als
+#    die 1.29 aus Trixie. Dieselbe Ablage liefert LoxBerry::System, das beide
+#    Skripte laden: wenn das aufloest, loest Net::MQTT::Simple auch auf.
+#
+# 2. Ein unbekannter Paketname reisst die GANZE Liste mit. plugininstall.pl
+#    haengt alle Zeilen dieser Datei zu einer Zeichenkette zusammen
+#    (Z. 1240-1247) und uebergibt sie in EINEM Aufruf an apt_install
+#    (Z. 1259). apt-get bricht bei einem unbekannten Namen ab, bevor es
+#    irgendetwas installiert - nachgestellt:
+#        apt-get install -s -y <unbekannt> libjson-perl arping
+#          -> E: Unable to locate package <unbekannt>, Rueckgabe 100,
+#             kein einziges "Inst"
+#        apt-get install -s -y libjson-perl arping
+#          -> 7 x Inst
+#    Auf bullseye und bookworm waeren damit auch net-tools, arping, arp-scan
+#    und alle Perl-Module ausgefallen - die Installation haette Erfolg
+#    gemeldet und der Scanner haette kein Werkzeug gehabt.
+#
+# Gefunden hat das Dominik Holland im Review zu Gagi2k/LoxBerry-Plugin-
+# WifiScanner#13 am 08.08.2026. Der Befund ist am 26.08.2026 bei der
+# Nachzaehlung dieser Liste uebersehen worden.
+#
+# Wer je ein Paket braucht, das es nur auf einer Debian-Fassung gibt:
+# plugininstall.pl bevorzugt dpkg/apt<debian_version>, wenn die Datei
+# existiert (Z. 1215-1220) - also dpkg/apt11, apt12, apt13.
 
 # Nicht aufgefuehrt, weil Bestandteil von Perl selbst: Getopt::Long, Fcntl,
 # IO::Socket, POSIX. Und File::HomeDir steht hier bewusst NICHT: check.pl
