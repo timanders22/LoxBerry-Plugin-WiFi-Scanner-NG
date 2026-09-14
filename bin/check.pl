@@ -734,24 +734,43 @@ sub sendFoundUsers
         $gesendet++;
     }
 
-    # Das Lebenszeichen. wifi_ng/status/ts geht bei JEDEM Durchgang hinaus,
-    # auch unveraendert - ueber MQTT gibt es kein "Alter", nur einen
-    # Zeitstempel, und der Miniserver rechnet selbst:
-    #     Alter = (Loxone-Zeit + 1230768000) - ts
-    $mqtt->retain("wifi_ng/status/ok", $ok);
-    $mqtt->retain("wifi_ng/status/ts", $jetzt);
-    $mqtt->retain("wifi_ng/status/zaehler", zaehler_lesen());
+    # ---------------------------------------------------------------
+    # DAS LEBENSZEICHEN GEHT OHNE RETAIN HINAUS - publish(), nicht retain().
+    #
+    # Bis 3.2.3 standen diese vier Themen auf retain(). Das ist genau die
+    # Falschaussage, gegen die das Lebenszeichen gebaut wurde: ein
+    # zurueckbehaltenes "status/listener 1" steht im Broker weiter, wenn der
+    # Dienst laengst tot ist - und ein zurueckbehaltener Zeitstempel sagt
+    # nicht, ob er fuenf Sekunden oder fuenf Tage alt ist. Am 14.09.2026 am
+    # Broker gemessen: "wifi_ng/status/listener 1" lag zurueckbehalten da,
+    # waehrend kein Cron lief, der es je auf 0 haette korrigieren koennen.
+    #
+    # Hausstandard seit 03.09.2026 (Regeln/07): Zustaende retained,
+    # Messwerte mit Zeitbezug nicht, das Lebenszeichen nie. Dieselbe Regel
+    # nennt den Last-Will ausdruecklich als Teil des Lebenszeichens - der
+    # Fall "ultraschall/online 0" eines laengst beendeten Dienstes.
+    #
+    # ZUSTAENDE bleiben retained: die Anwesenheit je Person oben, und
+    # status/mode, status/interval, status/enabled im Listener.
+    #
+    # ts geht bei JEDEM Durchgang hinaus, auch unveraendert - ueber MQTT
+    # gibt es kein "Alter", nur einen Zeitstempel, und der Miniserver
+    # rechnet selbst: Alter = (Loxone-Zeit + 1230768000) - ts
+    # ---------------------------------------------------------------
+    $mqtt->publish("wifi_ng/status/ok", $ok);
+    $mqtt->publish("wifi_ng/status/ts", $jetzt);
+    $mqtt->publish("wifi_ng/status/zaehler", zaehler_lesen());
 
     # Ob der Listener laeuft, wird HIER gemessen und nicht vom Listener
     # selbst behauptet. Net::MQTT::Simple kennt keinen letzten Willen; ein
     # Dienst, der seinen eigenen Tod melden soll, ist ohnehin der falsche
     # Zeuge. Alle drei Minuten eine echte Messung ist besser.
-    $mqtt->retain("wifi_ng/status/listener",
-                  (-f "$lbpbindir/mqtt_listener.pl" && listener_pid("$lbpbindir/mqtt_listener.pl")) ? 1 : 0);
+    $mqtt->publish("wifi_ng/status/listener",
+                   (-f "$lbpbindir/mqtt_listener.pl" && listener_pid("$lbpbindir/mqtt_listener.pl")) ? 1 : 0);
     $gesendet += 4;
 
     # Net::MQTT::Simple puffert. Ein disconnect() unmittelbar nach dem
-    # letzten retain() kann die Nachrichten verwerfen - deshalb erst
+    # letzten Senden kann die Nachrichten verwerfen - deshalb erst
     # abwarten, bis der Puffer draussen ist. can() davor, weil tick() in
     # aelteren Fassungen der Bibliothek fehlt; ein "Can't locate object
     # method" waere hier ein Abbruch nach dem Senden.

@@ -102,7 +102,11 @@ foreach (ws_vorgaben() as $ws_vk => $ws_vv) {
         $ws_zu_schreiben = true;
     }
 }
-if ($_SERVER['REQUEST_METHOD'] !== 'POST' && trim((string) $ws_cfg['BASE.TOKEN']) === '') {
+/* Mit isset: unter der Kommandozeile gibt es REQUEST_METHOD nicht. Die
+ * Verneinung muss dabei WAHR bleiben, wie bisher - deshalb '' als Ersatzwert
+ * und nicht isset() && … (13.09.2026). */
+if ((isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') !== 'POST'
+        && trim((string) $ws_cfg['BASE.TOKEN']) === '') {
     $ws_cfg['BASE.TOKEN'] = ws_token_erzeugen();
     $ws_zu_schreiben = true;
 }
@@ -128,7 +132,7 @@ $ws_fmt = ws_formtoken($ws_cfg);
  * Fail closed: ohne hinterlegtes Merkwort gibt es nichts zu vergleichen, und
  * hash_equals('', '') waere wahr.
  * ------------------------------------------------------------------ */
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($ws_fmt === '') {
         $ws_fehler[] = ws_t('FEHLER.CSRF_KEIN_TOKEN');
     } elseif (!ws_formtoken_ok($ws_cfg)) {
@@ -167,7 +171,8 @@ if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $ws_rei
  * ================================================================== */
 
 /* ---------------- Einstellungen ---------------- */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
+if (isset($_SERVER['REQUEST_METHOD'])
+        && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $neu = ws_config_read();
 
     $neu['BASE.ENABLED']         = isset($_POST['enabled']) ? '1' : '0';
@@ -290,7 +295,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
 }
 
 /* ---------------- MQTT / Uebertragungsweg ---------------- */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
+if (isset($_SERVER['REQUEST_METHOD'])
+        && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
     $neu = ws_config_read();
     $neu['BASE.UDP_ENABLE'] = ((string) ($_POST['out_way'] ?? 'mqtt') === 'udp') ? '1' : '0';
     $ws_up = (string) (int) ($_POST['udpport'] ?? 7007);
@@ -309,7 +315,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
 /* ---------------- Merkwort neu erzeugen ----------------
  * Orange, weil es wirkt: jede Adresse, die im Miniserver mit dem alten
  * Merkwort eingetragen ist, bekommt danach 403. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
+if (isset($_SERVER['REQUEST_METHOD'])
+        && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
     $neu = ws_config_read();
     $neu['BASE.TOKEN'] = ws_token_erzeugen();
     if (ws_config_write($neu)) {
@@ -325,7 +332,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
 /* ---------------- Aktionen aus dem Reiter Test ----------------
  * Seit 3.1.12 POST statt eines Verweises: sie loesen etwas aus, und ein
  * <a href> tut das auf Zuruf jeder fremden Seite. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['aktion'])) {
+if (isset($_SERVER['REQUEST_METHOD'])
+        && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['aktion'])) {
     $ws_a = (string) $_POST['aktion'];
     if ($ws_a === 'scan') {
         $bin = $ws_p['bindir'] . '/check.pl';
@@ -353,7 +361,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['aktion'])) {
  * ================================================================== */
 
 /* ---------------- Loxone-Vorlage ---------------- */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage'])) {
+if (isset($_SERVER['REQUEST_METHOD'])
+        && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage'])) {
     list($ws_vname, $ws_vinhalt) = ws_vorlage();
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $ws_vname . '"');
@@ -372,7 +381,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage'])) {
  *
  * Das Formularmerkmal gehoert ausdruecklich NICHT hinein - es wird aus dem
  * Merkwort abgeleitet und lebt eine Sitzung lang. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ws_sichern'])) {
+if (isset($_SERVER['REQUEST_METHOD'])
+        && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ws_sichern'])) {
     list($ws_kopf, $ws_werte) = ws_sicherung_inhalt();
     $ws_js = json_encode(array_merge($ws_kopf, $ws_werte),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -398,7 +408,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ws_sichern'])) {
  * Und danach wird der Dienst NACHGEZOGEN. Bis 3.1.11 wurden Zeitplan und
  * Listener beim Zurueckspielen nicht angefasst, waehrend die Meldung
  * behauptete, beides sei geschehen. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ws_zurueck'])) {
+if (isset($_SERVER['REQUEST_METHOD'])
+        && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ws_zurueck'])) {
     if (!isset($_FILES['ws_sicherung']) || !is_array($_FILES['ws_sicherung'])
         || !isset($_FILES['ws_sicherung']['tmp_name'])
         || !@is_uploaded_file($_FILES['ws_sicherung']['tmp_name'])) {
@@ -855,12 +866,17 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <?= ws_t('LOX.S2_TEXT') ?>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= ws_e(ws_t('ALLG.THEMA')) ?></th><th><?= ws_e(ws_t('ALLG.BEDEUTUNG')) ?></th><th><?= ws_e(ws_t('ALLG.WERTE')) ?></th></tr>
+<tr><th><?= ws_e(ws_t('ALLG.THEMA')) ?></th><th><?= ws_e(ws_t('ALLG.BEDEUTUNG')) ?></th><th><?= ws_e(ws_t('ALLG.WERTE')) ?></th><th style="width:13%;"><?= ws_e(ws_t('ALLG.RETAIN')) ?></th></tr>
+<?php /* Die vierte Spalte ist Hausstandard (Regeln/07): wer ein Thema anlegt,
+         schreibt in die Namenstabelle, ob es zurueckbehalten wird. Bis 3.2.3
+         fuehrte ws_themen() die Angabe mit, zeigte sie aber nicht - und
+         trug sie fuer die vier Lebenszeichen-Themen falsch. */ ?>
 <?php foreach (ws_themen($ws_cfg) as $ws_th) { ?>
-<tr><td class="sm-mono"><?= ws_e($ws_th[0]) ?></td><td><?= ws_e($ws_th[1]) ?></td><td><?= ws_e($ws_th[2]) ?></td></tr>
+<tr><td class="sm-mono"><?= ws_e($ws_th[0]) ?></td><td><?= ws_e($ws_th[1]) ?></td><td><?= ws_e($ws_th[2]) ?></td><td><?= $ws_th[3] ? ws_e(ws_t('ALLG.RETAIN_JA')) : '<span class="sm-aus">' . ws_e(ws_t('ALLG.RETAIN_NEIN')) . '</span>' ?></td></tr>
 <?php } ?>
 </table>
 </div>
+<div class="sm-hilfe"><?= ws_t('LOX.RETAIN_ERKLAERUNG') ?></div>
 </div>
 
 <div class="sm-step"><b><?= ws_e(ws_t('LOX.S3_TITEL')) ?></b><br>
@@ -1038,10 +1054,35 @@ if (!$ws_send) {
     foreach ($ws_send as $ws_tt) {
         if (strpos($ws_tt, '/status/') !== false) { $ws_gesendet_st[] = $ws_tt; }
     }
+    /* BEIDE Richtungen. Bis 3.2.3 stand hier nur die erste, und sie hat
+     * genau das uebersehen, wofuer sie da ist: wifi_ng/status/zaehler wurde
+     * gesendet und stand in keiner Themenliste. Eine Pruefung, die nur
+     * fragt "wird jedes gelistete Thema gesendet", ist gruen, solange die
+     * Liste zu kurz ist - und je kuerzer die Liste, desto gruener. */
     $ws_luecke = array_values(array_diff($ws_soll_st, $ws_gesendet_st));
-    $ws_add(ws_t('TEST.P_THEMEN'), $ws_luecke ? 0 : 1,
+    $ws_ungelistet = array_values(array_diff($ws_gesendet_st, $ws_soll_st));
+    $ws_add(ws_t('TEST.P_THEMEN'), ($ws_luecke || $ws_ungelistet) ? 0 : 1,
         $ws_luecke ? sprintf(ws_t('TEST.P_THEMEN_LUECKE'), ws_e(implode(', ', $ws_luecke)))
-                   : sprintf(ws_t('TEST.P_THEMEN_OK'), count($ws_soll_st)));
+        : ($ws_ungelistet ? sprintf(ws_t('TEST.P_THEMEN_UNGELISTET'), ws_e(implode(', ', $ws_ungelistet)))
+                          : sprintf(ws_t('TEST.P_THEMEN_OK'), count($ws_soll_st))));
+
+    /* Und eine eigene Zeile fuer die Retain-Frage: geht jedes
+     * Lebenszeichen-Thema wirklich OHNE Retain hinaus? Gemessen am
+     * Sendecode, nicht an der Absicht. */
+    $ws_lz_retained = array();
+    foreach (array('check.pl', 'mqtt_listener.pl') as $ws_pl) {
+        $ws_q = (string) @file_get_contents($ws_p['bindir'] . '/' . $ws_pl);
+        if ($ws_q === '') { continue; }
+        if (preg_match_all('/->\s*retain\s*\(\s*"([^"]+)"/', $ws_q, $ws_mr)) {
+            foreach ($ws_mr[1] as $ws_tt) {
+                if (in_array($ws_tt, ws_lebenszeichen(), true)) { $ws_lz_retained[] = $ws_tt; }
+            }
+        }
+    }
+    $ws_lz_retained = array_values(array_unique($ws_lz_retained));
+    $ws_add(ws_t('TEST.P_RETAIN'), $ws_lz_retained ? 0 : 1,
+        $ws_lz_retained ? sprintf(ws_t('TEST.P_RETAIN_FALSCH'), ws_e(implode(', ', $ws_lz_retained)))
+                        : sprintf(ws_t('TEST.P_RETAIN_OK'), count(ws_lebenszeichen())));
 }
 
 /* 6. Trifft jede Befehlserkennung die richtige Stelle?

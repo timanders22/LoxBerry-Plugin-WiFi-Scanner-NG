@@ -83,6 +83,18 @@ Wesentliche Aenderungen:
          hinzu kam net-tools (arp ist auf Debian 12/13 nicht mehr ab Werk da).
 
 
+  3.2.4  Das Lebenszeichen geht ohne Retain hinaus. Bis 3.2.3 standen
+         wifi_ng/status/ok, /ts, /zaehler und /listener auf retain() - am
+         14.09.2026 lag "wifi_ng/status/listener 1" zurueckbehalten im
+         Broker, waehrend kein Cron lief, der es je auf 0 haette
+         korrigieren koennen. Die Zustaende (Anwesenheit je Person,
+         status/mode, /interval, /enabled) bleiben retained.
+         Nebenbefunde: status/zaehler fehlte in der Themenliste, und die
+         Pruefzeile mass nur eine Richtung. Neu: Retain-Spalte in der
+         Themen-Tabelle und im Reiter Test eine Zeile "Geht das
+         Lebenszeichen ohne Retain hinaus?".
+
+
 Marken
 ------
 Fritz!Box ist eine Marke der AVM GmbH. Dieses Plugin steht in keiner

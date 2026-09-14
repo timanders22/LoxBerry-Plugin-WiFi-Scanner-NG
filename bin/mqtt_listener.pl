@@ -299,12 +299,20 @@ sub publish_status
     elsif ($fritz)           { $mode = 1; }
     else                     { $mode = 2; }
 
+    # Zustaende - sie gehoeren retained, damit Loxone nach einem Neustart
+    # des Miniservers oder des Gateways sofort den Stand hat.
     $mqtt->retain("wifi_ng/status/mode", $mode);
     $mqtt->retain("wifi_ng/status/interval", $cron);
     $mqtt->retain("wifi_ng/status/enabled", $enabled);
+
+    # Das Lebenszeichen dagegen OHNE Retain (seit 3.2.4).
+    #
     # Dass DIESER Prozess laeuft, ist die einzige Aussage, die er ueber sich
     # selbst treffen kann. Der Gegenwert - die 0, wenn er nicht mehr laeuft -
-    # kommt aus check.pl, das alle paar Minuten nachsieht.
-    $mqtt->retain("wifi_ng/status/listener", 1);
+    # kommt aus check.pl, das alle paar Minuten nachsieht. Zurueckbehalten
+    # waere diese 1 eine Behauptung, die niemand mehr zuruecknimmt: laeuft
+    # kein Cron, bleibt sie fuer immer stehen, und ein toter Listener sieht
+    # aus wie ein lebender. Genau so lag sie am 14.09.2026 im Broker.
+    $mqtt->publish("wifi_ng/status/listener", 1);
     LOGDEB "Published status: mode=$mode interval=$cron enabled=$enabled";
 }

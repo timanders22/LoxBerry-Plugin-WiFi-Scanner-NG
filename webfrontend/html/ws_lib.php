@@ -1358,8 +1358,27 @@ function ws_vorlage_zeile($titel, $bemerkung, $min, $max)
  * Sendecode ueberein" lesen alle hier. Angeglichen wird die Anleitung an den
  * Sendecode, nicht umgekehrt.
  *
- * Rueckgabe je Eintrag: array(Thema, Sprachschluessel der Bedeutung, Werte,
- * retained ja/nein).
+ * Rueckgabe je Eintrag: array(Thema, Bedeutung, Werte, retained ja/nein).
+ *
+ * DAS VIERTE FELD IST NICHT SCHMUCK. Der Hausstandard seit 03.09.2026
+ * (Regeln/07) unterscheidet drei Arten, und wer ein Thema anlegt, schreibt
+ * in DIESE Tabelle, welche es ist:
+ *
+ *   Zustand              retained  - damit Loxone nach einem Neustart des
+ *                                    Miniservers sofort den Stand hat
+ *   Messwert mit Zeitbezug   nicht  - sonst erscheint ein alter Wert als
+ *                                    aktuell
+ *   Lebenszeichen            NIE    - retained zeigte es immer "lebt"
+ *
+ * Bis 3.2.3 stand hier ueberall true, und der Sendecode tat dasselbe. Am
+ * 14.09.2026 lag "wifi_ng/status/listener 1" zurueckbehalten im Broker,
+ * waehrend kein Cron lief, der es je auf 0 haette korrigieren koennen -
+ * also genau die Falschaussage, gegen die das Lebenszeichen gebaut wurde.
+ *
+ * Und status/zaehler fehlte in dieser Liste ganz, obwohl check.pl es
+ * sendet. Die Pruefzeile im Reiter Test hat das nicht gemerkt: sie sah nur
+ * nach, ob jedes GELISTETE Thema auch gesendet wird, nicht ob jedes
+ * GESENDETE gelistet ist. Sie prueft seit 3.2.4 beide Richtungen.
  */
 function ws_themen(?array $cfg = null)
 {
@@ -1367,16 +1386,27 @@ function ws_themen(?array $cfg = null)
     $t = array();
     foreach (ws_users($cfg) as $u) {
         if ($u['name'] === '') { continue; }
+        // Anwesenheit ist ein Zustand.
         $t[] = array('wifi_ng/' . ws_topic_name($u['name']),
                      ws_t('LOX.ANWESENHEIT') . ' ' . $u['name'], '0 / 1', true);
     }
+    // Zustaende - retained.
     $t[] = array('wifi_ng/status/mode',     ws_t('LOX.T_MODE'),     ws_t('LOX.V_MODE'), true);
     $t[] = array('wifi_ng/status/interval', ws_t('LOX.T_INTERVAL'), ws_t('ALLG.MINUTEN'), true);
     $t[] = array('wifi_ng/status/enabled',  ws_t('LOX.T_ENABLED'),  '0 / 1', true);
-    $t[] = array('wifi_ng/status/ok',       ws_t('LOX.T_OK'),       '-1 / 0 / 1', true);
-    $t[] = array('wifi_ng/status/ts',       ws_t('LOX.T_TS'),       ws_t('LOX.V_TS'), true);
-    $t[] = array('wifi_ng/status/listener', ws_t('LOX.T_LISTENER'), '0 / 1', true);
+    // Das Lebenszeichen - nie retained.
+    $t[] = array('wifi_ng/status/ok',       ws_t('LOX.T_OK'),       '-1 / 0 / 1', false);
+    $t[] = array('wifi_ng/status/ts',       ws_t('LOX.T_TS'),       ws_t('LOX.V_TS'), false);
+    $t[] = array('wifi_ng/status/zaehler',  ws_t('LOX.T_ZAEHLER'),  '0 ... 999', false);
+    $t[] = array('wifi_ng/status/listener', ws_t('LOX.T_LISTENER'), '0 / 1', false);
     return $t;
+}
+
+/** Die Themen des Lebenszeichens - EINE Quelle fuer Sendecode und Anzeige. */
+function ws_lebenszeichen()
+{
+    return array('wifi_ng/status/ok', 'wifi_ng/status/ts',
+                 'wifi_ng/status/zaehler', 'wifi_ng/status/listener');
 }
 
 /** Die Befehle, die der Listener entgegennimmt - EINE Quelle. */

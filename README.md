@@ -126,6 +126,95 @@ Beim Speichern legt das Plugin eine Kopie neben dem Konfigordner ab
 (`config/plugins/<ordner>.wifi_scanner.backup`), damit die Einstellungen eine
 Neuinstallation überstehen. Das Deinstallieren entfernt sie seit 2.5.2 wieder.
 
+## Version 3.2.4 — das Lebenszeichen geht ohne Retain hinaus
+
+Eine Fehlerbehebung, am Gerät gefunden und am Broker belegt.
+
+### Der Befund
+
+Am 14.09.2026 lag im Broker zurückbehalten:
+
+```
+wifi_ng/status/listener 1
+```
+
+Der Dienst lief in diesem Moment — aber `ENABLED=0`, es lief also kein
+Cron, der den Wert je auf `0` hätte korrigieren können. Wäre der Listener
+gestorben, hätte dort für immer `1` gestanden.
+
+Das ist genau die Falschaussage, gegen die das Lebenszeichen in 3.2.0 gebaut
+wurde. Retained gesendet wird es selbst zu einer.
+
+Betroffen waren alle vier Themen des Lebenszeichens: `status/ok`,
+`status/ts`, `status/zaehler` und `status/listener`.
+
+### Warum es so weit kam
+
+Das Lebenszeichen stammt vom 26.08.2026. Der Hausstandard, der die drei
+Arten unterscheidet, wurde am **03.09.2026** festgelegt:
+
+> Zustände retained, Messwerte mit Zeitbezug nicht, das Lebenszeichen nie.
+
+Dazwischen wurde das Plugin zweimal angefasst, ohne dass jemand die
+Retain-Entscheidung nachgezogen hätte. Dieselbe Regel nennt den Fall
+ausdrücklich — `ultraschall/online 0` aus einem längst beendeten Dienst.
+
+### Behoben
+
+Vier `retain()` in `bin/check.pl` und eines in `bin/mqtt_listener.pl` sind
+`publish()` geworden. **Die Zustände bleiben retained**, damit Loxone nach
+einem Neustart des Miniservers sofort den Stand hat:
+
+| Thema | Art | Retain |
+|---|---|---|
+| `wifi_ng/<Person>` | Zustand | ja |
+| `wifi_ng/status/mode` | Zustand | ja |
+| `wifi_ng/status/interval` | Zustand | ja |
+| `wifi_ng/status/enabled` | Zustand | ja |
+| `wifi_ng/status/ok` | Lebenszeichen | **nein** |
+| `wifi_ng/status/ts` | Lebenszeichen | **nein** |
+| `wifi_ng/status/zaehler` | Lebenszeichen | **nein** |
+| `wifi_ng/status/listener` | Lebenszeichen | **nein** |
+
+### Zwei Nebenbefunde derselben Messung
+
+**`wifi_ng/status/zaehler` fehlte in der Themenliste.** `check.pl` sendet es
+seit 3.2.0, `ws_themen()` kannte es nicht — und damit stand es in keiner
+Tabelle, die der Anwender zu sehen bekommt.
+
+**Die Prüfzeile hat es nicht gemerkt.** Sie fragte nur, ob jedes *gelistete*
+Thema auch gesendet wird — nicht, ob jedes *gesendete* gelistet ist. Eine
+Prüfung dieser Bauart ist grün, solange die Liste zu kurz ist, und je kürzer
+die Liste, desto grüner. Sie misst seit 3.2.4 beide Richtungen.
+
+### Neu in der Oberfläche
+
+Die Themen-Tabelle im Reiter *Einbindung in Loxone* hat eine vierte Spalte:
+**Retain**. Der Hausstandard verlangt sie — wer ein Thema anlegt, schreibt
+in die Namenstabelle, ob es zurückbehalten wird. Die Angabe führte
+`ws_themen()` schon vorher mit, gezeigt wurde sie nie. Dieselbe Angabe steht
+jetzt auch in der Themenliste der Testseite, denn im MQTT Finder sieht man
+einem Thema nicht an, ob es retained ist.
+
+Dazu eine neue Prüfzeile im Reiter *Test*: **„Geht das Lebenszeichen ohne
+Retain hinaus?"** Sie misst am Sendecode, nicht an der Absicht, und ist in
+beide Richtungen geeicht — mit zurückgebautem `publish()` meldet sie „nein"
+und nennt die betroffenen Themen.
+
+### Beim Aktualisieren
+
+Ein zurückbehaltenes Thema verschwindet nicht von selbst. Wer von einer
+älteren Fassung kommt, räumt es einmal weg:
+
+```
+mosquitto_pub -h <broker> -u <benutzer> -P <kennwort> -t 'wifi_ng/status/listener' -r -n
+```
+
+Dasselbe für `wifi_ng/status/ok`, `/ts` und `/zaehler`, falls sie im Broker
+stehen. Eine leere Nutzlast mit `-r` löscht das Thema. Auf dem Gerät des
+Herausgebers am 14.09.2026 erledigt: von vier zurückbehaltenen Themen unter
+`wifi_ng/` blieben die drei Zustände.
+
 ## Version 3.2.2 — ein Paketname, der die ganze Liste mitgerissen hätte
 
 Betrifft nur die **Neuinstallation** auf LoxBerry 3 und auf LoxBerry 4 unter

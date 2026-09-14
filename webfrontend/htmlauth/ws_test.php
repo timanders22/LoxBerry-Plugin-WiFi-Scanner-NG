@@ -79,10 +79,14 @@ if (isset($_GET['topics'])) {
     foreach ($users as $u) {
         printf("  wifi_ng/%-24s   [%s]\n", ws_topic_name($u['name']), $u['name']);
     }
+    /* Die Retain-Angabe gehoert auch hierhin - dies ist die Liste, die man
+     * mit dem MQTT Finder abgleicht, und dort sieht man einem Thema nicht
+     * an, ob es zurueckbehalten wird. */
     echo "\n" . ws_t('T.THEMEN_ZUSTAND') . "\n";
     foreach (ws_themen($cfg) as $th) {
         if (strpos($th[0], '/status/') === false) { continue; }
-        printf("  %-30s %s\n", $th[0], $th[1]);
+        printf("  %-30s %-34s [%s]\n", $th[0], $th[1],
+               $th[3] ? ws_t('T.RETAIN_JA') : ws_t('T.RETAIN_NEIN'));
     }
     echo "\n" . ws_t('T.THEMEN_BEFEHLE') . "\n";
     foreach (ws_befehle() as $bf) {
