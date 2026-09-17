@@ -302,7 +302,12 @@ sub publish_status
     # Zustaende - sie gehoeren retained, damit Loxone nach einem Neustart
     # des Miniservers oder des Gateways sofort den Stand hat.
     $mqtt->retain("wifi_ng/status/mode", $mode);
-    $mqtt->retain("wifi_ng/status/interval", $cron);
+    # Ein LEERER Wert geht nie retained hinaus: eine leere Nutzlast mit
+    # retain loescht das Thema im Broker (Regeln/07). BASE.CRON fehlt auf
+    # einer nicht eingerichteten Anlage - bis 3.2.4 verschwand das Thema
+    # dann bei jedem Start des Listeners aus dem Broker.
+    if ($cron ne "") { $mqtt->retain("wifi_ng/status/interval", $cron); }
+    else             { $mqtt->publish("wifi_ng/status/interval", $cron); }
     $mqtt->retain("wifi_ng/status/enabled", $enabled);
 
     # Das Lebenszeichen dagegen OHNE Retain (seit 3.2.4).
