@@ -7,12 +7,21 @@
 # je nachdem, wohin LoxBerry diese Datei bei der Installation legt, sind es
 # drei oder vier Ebenen. Deshalb wird aufwaerts gesucht, bis ein
 # Verzeichnis gefunden ist, das nachweislich eine LoxBerry-Wurzel ist:
-# es traegt config/plugins UND data/plugins.
+# es traegt config/plugins UND data/plugins UND config/system/general.json.
+#
+# general.json gehoert seit 3.2.8 dazu (Regeln/06, "Eine Wurzelsuche ueber
+# config/plugins ... trifft auf einem Pruefrechner das Laufwerk selbst"): ein
+# LoxBerry hat sie immer, ein Rest aus Pruefstaenden nie. Gemessen am
+# 18.09.2026 in WSL (Pruefung-WiFi-Scanner-NG-3.2.8/Pruefstaende/
+# messe_welle2.sh, Fall H7): aus einem ausgepackten Archiv unter einem
+# solchen Rest, ohne LBHOMEDIR aufgerufen, startete diese Datei den Listener
+# des fremden Baums.
 lb_wurzel_suchen() {
     v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
     i=0
     while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
-        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ]; then
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
+                && [ -f "$v/config/system/general.json" ]; then
             echo "$v"; return 0
         fi
         v=$(dirname "$v"); i=$((i + 1))

@@ -126,6 +126,83 @@ Beim Speichern legt das Plugin eine Kopie neben dem Konfigordner ab
 (`config/plugins/<ordner>.wifi_scanner.backup`), damit die Einstellungen eine
 Neuinstallation überstehen. Das Deinstallieren entfernt sie seit 2.5.2 wieder.
 
+## Version 3.2.8 — Sicherungen, die einen Abbruch überstehen
+
+Drei Fehlerbehebungen aus einer Bestandsmessung über alle Plugins dieses
+Hauses. Alle am 18.09.2026 in einer Ubuntu-WSL nachgestellt, vorher rot und
+nachher grün gemessen; jede Korrektur wurde einzeln wieder herausgenommen,
+und die Messung wurde dann genau an ihrer Stelle wieder rot. Am Gerät ist
+nichts davon nachgemessen.
+
+### Die alte Sicherung fiel, bevor die neue stand
+
+Vor jedem Update sichert `preupgrade.sh` die Einstellungen nach
+`data/plugins/<ordner>.upgrade_sicherung`. Bis 3.2.7 löschte es dazu
+zuerst die vorhandene Sicherung und kopierte dann neu. Bricht ein Update ab,
+nachdem LoxBerry den Konfigordner schon abgeräumt hat, ist diese Sicherung
+aber die **einzige** Abschrift der Einstellungen — und ein zweiter
+Update-Versuch löschte sie, bevor er feststellte, dass es nichts mehr zu
+sichern gab. Gemessen: die Konfiguration war danach fort. Dasselbe, wenn das
+Schreiben scheitert (volle Karte), und dasselbe, wenn der erste Versuch erst
+nach dem Kopieren der neuen Dateien abbrach: dann stand die mitgelieferte
+Vorgabe da und wurde über die echte Sicherung gelegt.
+
+Jetzt entsteht die neue Sicherung daneben, jede Datei wird nachgesehen, und
+erst dann wird umbenannt. Eine Sicherung mit echten Einstellungen wird nie
+durch eine abgeschnittene Konfiguration oder durch die bloße Vorgabe ersetzt.
+
+Dieselbe Bauart stand an zwei weiteren Stellen und ist dort ebenso behoben:
+beim Schreiben der Zweitschriften in `preupgrade.sh`, und in der Oberfläche,
+die bei jedem Speichern `config/plugins/<ordner>.wifi_scanner.backup`
+mitschreibt — dort war die Zweitschrift nach einem gescheiterten Schreiben
+0 Byte groß.
+
+### Die Zweitschrift wurde nach Größe statt nach Inhalt beurteilt
+
+`preupgrade.sh` legte die Zweitschriften `<ordner>.backup.wifi_scanner.cfg`
+und `<ordner>.backup.mqtt_subscriptions.cfg` an, sobald die Datei „nicht
+leer“ war. Eine abgeschnittene Konfiguration ist nicht leer: sie wurde über
+die heile Zweitschrift kopiert, und der Rückweg war fort. Umgekehrt holte
+`postinstall.sh` eine abgeschnittene Konfiguration nicht aus der Zweitschrift
+zurück, spielte aber eine abgeschnittene Zweitschrift ungeprüft ein.
+
+Jetzt gilt eine Datei nur dann als vollständig, wenn ihre letzte Zeile
+vollständig ist, jede Zeile die Form der Datei hat und `USERS` zur Zahl der
+Personenabschnitte passt. Eine Zweitschrift mit Merkwort wird nie durch einen
+Stand ohne ersetzt. Wird eine unvollständige Konfiguration aus der
+Zweitschrift geheilt, bleibt der verdrängte Stand als
+`wifi_scanner.cfg.kaputt` (nur für den Besitzer lesbar) daneben liegen.
+
+Nicht erkannt wird ein Schnitt genau an einer Zeilengrenze mitten in
+`[BASE]`, wenn danach nichts mehr fehlt, woran es sich zeigen ließe.
+
+### Die LoxBerry-Wurzel wurde geraten
+
+Ohne `LBHOMEDIR` suchen `daemon/daemon` und die Oberfläche das
+LoxBerry-Verzeichnis vom eigenen Ablageort aus nach oben, `uninstall` nahm
+schlicht drei Ebenen darüber. Auf einem Rechner, auf dem Reste anderer
+Prüfläufe liegen, trifft das ein Verzeichnis, das kein LoxBerry ist. Gemessen:
+die Oberfläche schrieb dort ihre Konfiguration hinein, `daemon/daemon`
+startete den Listener eines fremden Baums, und `uninstall` löschte eine
+fremde Datei. Jetzt gilt nur ein Verzeichnis mit
+`config/system/general.json` als Wurzel — die hat jeder LoxBerry. Findet
+`uninstall` keine, meldet es das und rührt nichts an. Auf einem LoxBerry
+ändert sich dadurch nichts: der Installer übergibt die Wurzel ohnehin.
+
+### Aufgeräumt
+
+* `uninstall` entfernt auch die Zwischenstände, die nach einem Abbruch
+  mitten im Sichern liegenbleiben können (`….upgrade_sicherung.neu`, `.alt`,
+  `….backup.*.neu`, `….wifi_scanner.backup.tmp.*`) — sie tragen dieselben
+  Namen und Adressen wie die Sicherung.
+* Die Funktion `ws_lib_pfade()` wurde nirgends aufgerufen und ist entfernt.
+
+### Beim Aktualisieren
+
+Nichts zu tun. Einstellungen, Merkwort und Zeitplan bleiben unverändert.
+Neu im Installationsprotokoll sind Warnungen, wenn eine Datei unvollständig
+ist oder eine vorhandene Sicherung stehen bleibt.
+
 ## Version 3.2.7 — die Aktualisierungslücke wird gesperrt
 
 Zwei Fehlerbehebungen, beide am 18.09.2026 in einer Ubuntu-WSL nachgestellt

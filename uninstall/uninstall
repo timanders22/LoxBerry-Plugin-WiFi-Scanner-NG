@@ -30,15 +30,43 @@
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="wifi_ng"
 BASE="${5:-$LBHOMEDIR}"
-# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
-# Systempfad - LoxBerry laesst sich anderswohin installieren, und der
-# Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
-# Der Installer legt dieses Skript als <home>/data/system/uninstall/<ordner>
-# ab und uebergibt die LoxBerry-Wurzel als fuenftes Argument
-# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026);
-# dieser Zweig greift nur, wenn beides fehlt.
+# Dritter Rueckfall: vom eigenen Ablageort aufwaerts suchen. Bewusst kein
+# fest verdrahteter Systempfad - LoxBerry laesst sich anderswohin
+# installieren, und der Plugin-Pruefer sucht die Zeichenkette, ohne den
+# Zusammenhang zu sehen. Der Installer legt dieses Skript als
+# <home>/data/system/uninstall/<ordner> ab und uebergibt die LoxBerry-Wurzel
+# als fuenftes Argument (plugininstall.pl:1158 und :1577, am Geraet
+# nachgesehen 17.09.2026); dieser Zweig greift nur, wenn beides fehlt.
+#
+# Bis 3.2.7 stand hier eine feste Zahl von Ebenen ("../../.."), ohne jede
+# Probe, ob dort ueberhaupt ein LoxBerry liegt. Gemessen am 18.09.2026 in
+# WSL (Pruefung-WiFi-Scanner-NG-3.2.8/Pruefstaende/messe_welle2.sh, Fall H4):
+# aus einem Pruefarchiv <ordner>/pruefung/<plugin>/uninstall/uninstall ohne
+# Argumente aufgerufen, loeschte es <ordner>/config/plugins/wifi_ng.wifi_scanner.backup
+# eines fremden Baums. Jetzt gilt nur ein Verzeichnis mit config/plugins,
+# data/plugins UND config/system/general.json (Regeln/06: ein LoxBerry hat
+# sie immer, ein Rest aus Pruefstaenden nie); ohne eine solche Wurzel wird
+# gewarnt und nichts angefasst.
+lb_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
+                && [ -f "$v/config/system/general.json" ]; then
+            echo "$v"; return 0
+        fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)
+    BASE=$(lb_wurzel_suchen)
+fi
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
+    echo "<WARNING> Die LoxBerry-Wurzel ist unbekannt (kein fuenftes Argument, kein"
+    echo "<WARNING> LBHOMEDIR, und oberhalb dieses Skripts liegt kein LoxBerry)."
+    echo "<WARNING> Es wurde nichts beendet und nichts geloescht."
+    exit 1
 fi
 
 SKRIPT="$BASE/bin/plugins/$PDIR/mqtt_listener.pl"
@@ -152,6 +180,23 @@ elif [ "$WEG" -eq 0 ]; then
     echo "<INFO> Es lagen keine Sicherungsdateien neben dem Konfigordner."
 fi
 
+# Seit 3.2.8 entstehen die Zweitschriften unteilbar: erst eine Nebendatei,
+# dann umbenennen (preupgrade.sh: <datei>.neu; ws_config_write():
+# <ordner>.wifi_scanner.backup.tmp.<pid>). Bricht ein Lauf genau dazwischen
+# ab, bleibt die Nebendatei liegen - mit demselben Inhalt wie die
+# Zweitschrift. Sie geht hier denselben Weg.
+for BK in "$BASE/config/plugins/$PDIR.backup.wifi_scanner.cfg.neu" \
+          "$BASE/config/plugins/$PDIR.backup.mqtt_subscriptions.cfg.neu" \
+          "$BASE/config/plugins/$PDIR.wifi_scanner.backup.tmp."*; do
+    [ -f "$BK" ] || continue
+    dd if=/dev/zero of="$BK" bs=1024 count=8 conv=notrunc 2>/dev/null
+    if rm -f "$BK"; then
+        echo "<OK> Liegengebliebene Nebendatei entfernt: $(basename "$BK")"
+    else
+        echo "<WARNING> $(basename "$BK") liess sich nicht entfernen."
+    fi
+done
+
 
 # ---------- Den Nachbarn der Sicherung wegraeumen ----------
 # data/plugins/<ordner>.upgrade_sicherung liegt AUSSERHALB des Ordners, den
@@ -160,7 +205,12 @@ fi
 UN_FOLDER="${3:-}"
 UN_BASE="${5:-$LBHOMEDIR}"
 if [ -n "$UN_FOLDER" ] && [ -n "$UN_BASE" ] && [ -d "$UN_BASE/data/plugins" ]; then
-    rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" 2>/dev/null
+    # .neu und .alt sind die Zwischenstaende des unteilbaren Sicherns in
+    # preupgrade.sh (seit 3.2.8); nach einem Abbruch tragen sie denselben
+    # Inhalt wie die Sicherung.
+    rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" \
+           "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.neu" \
+           "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.alt" 2>/dev/null
 fi
 
 # ---------- Die Marke der Aktualisierung ----------

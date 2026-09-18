@@ -125,37 +125,108 @@ done
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
 # Zurueckspielen aus der Zweitschrift - aber NUR, wenn die Datei des Nutzers
 # wirklich verloren ist. Erkannt wird das an dreierlei: sie fehlt, sie ist
-# leer, oder sie ist zeichengenau die mitgelieferte Vorgabe (Pruefsumme
-# unten). Der letzte Fall ist der eigentliche: genau so sieht die Datei nach
-# dem Kopierschritt des Installers aus.
+# nicht vollstaendig (Inhaltsprobe unten), oder sie ist zeichengenau die
+# mitgelieferte Vorgabe (Pruefsumme unten). Der letzte Fall ist der
+# eigentliche: genau so sieht die Datei nach dem Kopierschritt des
+# Installers aus.
+#
+# Bis 3.2.7 hiess "nicht vollstaendig" nur "leer" ([ ! -s ]). Eine
+# abgeschnittene Konfiguration ist nicht leer und stimmt nicht mit der
+# Vorgabe ueberein - sie blieb stehen, die heile Zweitschrift daneben wurde
+# nicht geholt. Gemessen am 18.09.2026 in WSL
+# (Pruefung-WiFi-Scanner-NG-3.2.8/Pruefstaende/messe_welle2.sh, Fall C6).
+# Umgekehrt wurde eine abgeschnittene Zweitschrift ungeprueft eingespielt
+# (Fall C9). Geheilt wird jetzt nur aus einer heilen Zweitschrift, und der
+# verdraengte Stand bleibt als <datei>.kaputt (0600) liegen.
 #
 # Eine gueltige Konfiguration wird NIE ueberschrieben. Eine Sicherung, die
 # echte Einstellungen ersetzt, waere schlimmer als gar keine.
+#
+# Die Inhaltsprobe ist gleichlautend mit preupgrade.sh; beide Stellen
+# zusammen pflegen.
+ws_cfg_heil() {
+    [ -f "$1" ] && [ -r "$1" ] || return 1
+    [ "$(tail -c 1 "$1" 2>/dev/null | wc -l)" -eq 1 ] || return 1
+    awk '
+        /^[ \t]*$/ || /^[ \t]*[;#]/ { next }
+        /^[ \t]*\[[^]]+\][ \t]*$/ {
+            ab = $0; gsub(/[][ \t]/, "", ab); ab = toupper(ab); gesehen[ab] = 1; next
+        }
+        index($0, "=") > 1 {
+            k = substr($0, 1, index($0, "=") - 1); gsub(/[ \t]/, "", k); k = toupper(k)
+            v = substr($0, index($0, "=") + 1); gsub(/^[ \t]+|[ \t\r]+$/, "", v)
+            if (ab == "BASE" && k == "USERS") { users = v }
+            if (k == "NAME" || k == "MACS") { hat[ab SUBSEP k] = 1 }
+            next
+        }
+        { kaputt = 1 }
+        END {
+            if (kaputt || !("BASE" in gesehen) || users !~ /^[0-9]+$/) { exit 1 }
+            for (i = 1; i <= users + 0; i++) {
+                if (!(("USER" i) SUBSEP "NAME" in hat) || !(("USER" i) SUBSEP "MACS" in hat)) { exit 1 }
+            }
+            exit 0
+        }' "$1" 2>/dev/null
+}
+ws_abo_heil() {
+    [ -f "$1" ] && [ -r "$1" ] || return 1
+    [ "$(tail -c 1 "$1" 2>/dev/null | wc -l)" -eq 1 ] || return 1
+    grep -q '[^[:space:]]' "$1" 2>/dev/null
+}
+ws_heil() {   # ws_heil cfg|abo <datei>
+    case "$1" in
+        cfg) ws_cfg_heil "$2" ;;
+        abo) ws_abo_heil "$2" ;;
+        *)   return 1 ;;
+    esac
+}
 NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-wifi_ng}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
-netz_zurueck() {
-    datei=$1; soll=$2
+netz_zurueck() {   # netz_zurueck <datei> <pruefsumme der vorgabe> cfg|abo
+    datei=$1; soll=$2; art=$3
     ziel="$NETZ_CFG/$datei"
     zweit="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.$datei"
     [ -f "$zweit" ] || return 0
     verloren=0
-    if [ ! -f "$ziel" ] || [ ! -s "$ziel" ]; then
+    kaputt=0
+    if [ ! -f "$ziel" ]; then
         verloren=1
+    elif ! ws_heil "$art" "$ziel"; then
+        verloren=1
+        [ -s "$ziel" ] && kaputt=1
     else
         ist=$(sha256sum "$ziel" 2>/dev/null | cut -d" " -f1)
         [ -n "$ist" ] && [ "$ist" = "$soll" ] && verloren=1
     fi
-    if [ "$verloren" = "1" ]; then
-        if cp -p "$zweit" "$ziel" 2>/dev/null; then
+    [ "$verloren" = "1" ] || return 0
+    if ! ws_heil "$art" "$zweit"; then
+        echo "<WARNING> $datei: die Zweitschrift ist selbst nicht vollstaendig und wird"
+        echo "<WARNING> nicht eingespielt. Sie liegt unveraendert unter $zweit."
+        return 0
+    fi
+    rm -f "$ziel.neu" 2>/dev/null
+    if cp -p "$zweit" "$ziel.neu" 2>/dev/null && cmp -s "$zweit" "$ziel.neu"; then
+        if [ "$kaputt" = "1" ]; then
+            if cp -p "$ziel" "$ziel.kaputt" 2>/dev/null && chmod 0600 "$ziel.kaputt" 2>/dev/null; then
+                echo "<WARNING> $datei war nicht vollstaendig; der bisherige Stand liegt als $datei.kaputt daneben."
+            else
+                rm -f "$ziel.neu" 2>/dev/null
+                echo "<WARNING> $datei ist nicht vollstaendig, liess sich aber nicht beiseitelegen -"
+                echo "<WARNING> nichts geaendert. Die Zweitschrift liegt unter $zweit."
+                return 0
+            fi
+        fi
+        if mv -f "$ziel.neu" "$ziel" 2>/dev/null; then
             echo "<OK> $datei aus der Zweitschrift wiederhergestellt."
-        else
-            echo "<WARNING> $datei liess sich nicht zurueckspielen. Die Sicherung"
-            echo "<WARNING> liegt unter $zweit und kann von Hand kopiert werden."
+            return 0
         fi
     fi
+    rm -f "$ziel.neu" 2>/dev/null
+    echo "<WARNING> $datei liess sich nicht zurueckspielen. Die Sicherung"
+    echo "<WARNING> liegt unter $zweit und kann von Hand kopiert werden."
 }
-netz_zurueck "mqtt_subscriptions.cfg" "8e8f8a5e3c6ba7c6fbfe7d6fed9f81f663067d3964501f51ad051cd65d6d5d98"
-netz_zurueck "wifi_scanner.cfg" "30bcb5717482b3b0aa670ce91a023ab7100fac5db98d0e271e879555a541fc3a"
+netz_zurueck "mqtt_subscriptions.cfg" "8e8f8a5e3c6ba7c6fbfe7d6fed9f81f663067d3964501f51ad051cd65d6d5d98" abo
+netz_zurueck "wifi_scanner.cfg" "30bcb5717482b3b0aa670ce91a023ab7100fac5db98d0e271e879555a541fc3a" cfg
 
 exit 0

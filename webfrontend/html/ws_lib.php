@@ -10,9 +10,13 @@
  *     <home>/webfrontend/htmlauth/plugins/<ordner>/
  *
  * Ein require aus dem einen in den anderen ueber '..' trifft nur das
- * ausgepackte Archiv; installiert ergibt es einen leeren HTTP 500. Die
- * Oberflaeche holt die Bibliothek deshalb ueber eine Kandidatenliste (siehe
- * ws_lib_pfade() weiter unten, benutzt von htmlauth/index.php).
+ * ausgepackte Archiv; installiert ergibt es einen leeren HTTP 500. Jeder
+ * Einstiegspunkt sucht die Bibliothek deshalb selbst: htmlauth/index.php und
+ * htmlauth/ws_test.php ueber eine Kandidatenliste mit der Auskunft von
+ * LoxBerry ($LBHOMEDIR/$LBPPLUGINDIR) zuerst, html/index.php im eigenen
+ * Verzeichnis. Bis 3.2.7 stand hier zusaetzlich eine Funktion
+ * ws_lib_pfade() mit einer solchen Liste; aufgerufen hat sie niemand
+ * (tote_helfer.py, und grep ueber den ganzen Plugin-Ordner).
  *
  * Der direkte Aufruf dieser Datei im Browser definiert nur Funktionen und gibt
  * nichts aus - sie enthaelt keine Anweisung ausserhalb einer Funktion.
@@ -40,11 +44,19 @@ if (!function_exists('ws_e')) {
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins UND webfrontend UND config/system/general.json enthaelt.
+ * Das trifft die uebliche Installation genauso wie eine an einem anderen
+ * Ort - und es trifft auch den Fall, dass das Plugin noch als entpacktes
+ * Archiv daliegt (dann findet es nichts und gibt einen Leerstring zurueck,
+ * was der Aufrufer ohnehin abfangen muss).
+ *
+ * general.json gehoert seit 3.2.8 dazu (Regeln/06, "Eine Wurzelsuche ueber
+ * config/plugins ... trifft auf einem Pruefrechner das Laufwerk selbst"):
+ * ein LoxBerry hat sie immer, ein Rest aus Pruefstaenden nie. Gemessen am
+ * 18.09.2026 in WSL (Pruefung-WiFi-Scanner-NG-3.2.8/Pruefstaende/
+ * messe_welle2.sh, Fall H1): ein ausgepacktes Archiv unter einem Ordner mit
+ * config/plugins und webfrontend, aufgerufen ohne LBHOMEDIR, schrieb seine
+ * Konfiguration nach <fremder Ordner>/config/plugins/wifi_ng/.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -54,7 +66,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -130,36 +143,6 @@ function ws_t($schluessel)
     }
     $teile = array_pad(explode('.', $schluessel, 2), 2, '');
     return isset($texte[$teile[0]][$teile[1]]) ? $texte[$teile[0]][$teile[1]] : $schluessel;
-}
-
-/**
- * Die Kandidatenliste, ueber die ein Einstiegspunkt diese Datei findet.
- *
- * Der Aufrufer uebergibt sein eigenes __DIR__. Zurueck kommt eine Liste von
- * Pfaden in der Reihenfolge, in der sie zu versuchen sind - die Auskunft von
- * LoxBerry selbst zuerst.
- *
- * Diese Funktion steht hier, damit sie zusammen mit der Datei gepflegt wird,
- * die sie findet. Der Aufrufer, der sie noch nicht laden konnte, traegt
- * dieselbe Liste als kleinen Vorlauf bei sich - das ist die eine Doppelung,
- * die sich nicht aufloesen laesst.
- */
-function ws_lib_pfade($eigenes_verzeichnis)
-{
-    $liste = array();
-    $home = getenv('LBHOMEDIR');
-    $pdir = getenv('LBPPLUGINDIR');
-    if ($home && $pdir) {
-        $liste[] = $home . '/webfrontend/html/plugins/' . $pdir . '/ws_lib.php';
-    }
-    // Installiert: <home>/webfrontend/htmlauth/plugins/<ordner>/ -> drei Ebenen
-    $liste[] = dirname(dirname(dirname($eigenes_verzeichnis)))
-             . '/html/plugins/' . basename($eigenes_verzeichnis) . '/ws_lib.php';
-    // Ausgepacktes Archiv: webfrontend/htmlauth/ -> webfrontend/html/
-    $liste[] = dirname($eigenes_verzeichnis) . '/html/ws_lib.php';
-    // Danebenliegend (Endpunkt selbst)
-    $liste[] = $eigenes_verzeichnis . '/ws_lib.php';
-    return $liste;
 }
 
 /** Basisverzeichnisse ermitteln - funktioniert installiert wie im Archiv. */
@@ -433,8 +416,29 @@ function ws_config_write($cfg)
         @unlink($tmp);
         return false;
     }
-    @copy($p['config'], $p['backup']);   // Sicherung ausserhalb des Plugin-Ordners
-    @chmod($p['backup'], 0600);
+    /* Die Zweitschrift ausserhalb des Plugin-Ordners - auf demselben Weg:
+     * daneben schreiben, dann umbenennen.
+     *
+     * Bis 3.2.7 stand hier copy($p['config'], $p['backup']). copy() oeffnet
+     * das Ziel mit O_TRUNC: die bisherige Zweitschrift ist sofort leer und
+     * wird erst danach gefuellt. Gemessen am 18.09.2026 in WSL
+     * (Pruefung-WiFi-Scanner-NG-3.2.8/Pruefstaende/messe_welle2.sh, Fall D6,
+     * Schreiben scheitert wie auf einer vollen Karte): die Zweitschrift hatte
+     * danach 0 Byte - weder der alte noch der neue Stand. Scheitert jetzt das
+     * Schreiben, bleibt die bisherige unveraendert stehen.
+     *
+     * Die Konfiguration selbst ist in diesem Augenblick schon geschrieben;
+     * ein Fehlschlag hier aendert den Rueckgabewert deshalb nicht. */
+    $btmp = $p['backup'] . '.tmp.' . getmypid();
+    $bh = @fopen($btmp, 'c');
+    if ($bh !== false) {
+        @chmod($btmp, 0600);
+        $ok = @ftruncate($bh, 0) && @fwrite($bh, $txt) === strlen($txt) && @fflush($bh);
+        @fclose($bh);
+        if (!$ok || !@rename($btmp, $p['backup'])) {
+            @unlink($btmp);
+        }
+    }
     return true;
 }
 
