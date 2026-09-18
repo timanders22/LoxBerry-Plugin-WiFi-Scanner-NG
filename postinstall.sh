@@ -41,20 +41,53 @@ echo "<INFO> Base folder is: $ARGV5"
 
 # Start the MQTT command listener (also started at boot via daemon script)
 LISTENER=$ARGV5/bin/plugins/$ARGV3/mqtt_listener.pl
+
+# Gehoert diese Prozessnummer unserem Listener?
+#
+# argv[0] ist ein perl, argv[1] ist ZEICHENGENAU unser Pfad, und es gibt kein
+# drittes Argument. Bis 3.2.6 stand hier "head -2 | grep -qxF <pfad>" - das
+# fragt nicht, WER die Datei in der Hand hat. Gemessen am 18.09.2026 in WSL
+# (Pruefung-WiFi-Scanner-NG-3.2.7/Pruefstaende/messe_koeder.sh): ein Koeder
+# "tail <listenerpfad> -f" - GNU tail vertauscht Option und Dateiname, der
+# Pfad steht damit in argv[1] - wurde von der gleichlautenden Stelle in
+# postupgrade.sh beendet (Fall K4, "Koeder IST TOT"). Dieselbe Bauart stand
+# in vier Dateien dieser Linie; alle vier sind in 3.2.7 umgestellt.
+#
+# Die Lesbarkeitsprobe zuerst: das "2>/dev/null" hing bis 3.2.6 an tr, nicht
+# an der Umleitung - ein Prozess, der waehrenddessen endet, schrieb eine
+# Schalenfehlermeldung in das Installationsprotokoll (13 Zeilen in einem
+# einzigen Lauf gemessen, Fall K5).
+ws_ist_listener() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    ws_n=0
+    ws_treffer=0
+    while IFS= read -r ws_arg; do
+        ws_n=$((ws_n + 1))
+        if [ "$ws_n" = 1 ]; then
+            case "${ws_arg##*/}" in
+                perl|perl5*) ;;
+                *) return 1 ;;
+            esac
+        elif [ "$ws_n" = 2 ] && [ "$ws_arg" = "$LISTENER" ]; then
+            ws_treffer=1
+        fi
+    done <<WS_ARGUMENTE
+$( { tr '\0' '\n' < "/proc/$1/cmdline"; } 2>/dev/null )
+WS_ARGUMENTE
+    [ "$ws_treffer" = 1 ] && [ "$ws_n" = 2 ]
+}
+
 if [ -f "$LISTENER" ]; then
     echo "<INFO> Starting WifiScanner MQTT listener"
     chmod +x "$LISTENER"
-    # Gezielt ueber die Befehlszeile, argumentweise: "pkill -f" traefe auch
-    # einen Editor mit offener Datei oder ein zweites Exemplar des Plugins.
-    #
     # Auf das Ende WARTEN, bevor der neue startet. Bis 3.1.11 folgte der
     # Start unmittelbar auf das kill - der alte Prozess haengt dann noch am
     # Broker, und zwei Listener beantworten jeden Befehl doppelt. In
     # postupgrade.sh war genau das seit 2.5.2 behoben; hier stand weiter der
     # alte Ablauf. Ein Widerspruch in der eigenen Datei ist eine Fehlerquelle.
     for D in /proc/[0-9]*; do
-        P=$(basename "$D")
-        if tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null | head -2 | grep -qxF "$LISTENER"; then
+        P=${D#/proc/}
+        if ws_ist_listener "$P"; then
             kill "$P" 2>/dev/null
             for i in 1 2 3 4 5; do
                 kill -0 "$P" 2>/dev/null || break

@@ -220,6 +220,78 @@ function ws_paths()
     return $p;
 }
 
+/* ==================================================================
+ * Die Marke "Aktualisierung laeuft"
+ * ================================================================== */
+
+/**
+ * Wo liegt die Marke?
+ *
+ * NEBEN dem Datenordner, nicht darin: purge_installation loescht
+ * data/plugins/<ordner>/ ohne jede Bedingung (Regeln/06). Der Punkt im Namen
+ * ist der ganze Unterschied - "rm -rf .../<x>/" trifft den Nachbarn
+ * "<x>.upgrade_laeuft" nicht.
+ */
+function ws_upgrade_marke()
+{
+    $p = ws_paths();
+    return dirname($p['datadir']) . '/' . basename($p['datadir']) . '.upgrade_laeuft';
+}
+
+/**
+ * Laeuft gerade eine Aktualisierung dieses Plugins?
+ *
+ * preupgrade.sh legt die Marke als Erstes an, postupgrade.sh - das letzte
+ * Hakenskript dieser Linie - entfernt sie nach dem Start des Listeners.
+ *
+ * Aelter als eine Stunde, unlesbar oder kein Zeitpunkt: sie gilt NICHT. Eine
+ * abgebrochene Installation darf die Oberflaeche nicht fuer immer stilllegen.
+ * Ein paar Minuten "Zukunft" sind eine nachgestellte Uhr, keine Luege.
+ *
+ * WARUM ES SIE GIBT - am 18.09.2026 in WSL gemessen
+ * (Pruefung-WiFi-Scanner-NG-3.2.7/Pruefstaende/messe_luecke.sh, Fall B1b):
+ * in der Luecke zwischen purge_installation und postupgrade.sh steht in
+ * config/plugins/<ordner>/wifi_scanner.cfg die mitgelieferte Vorgabe ohne
+ * Merkwort. Wurde die Oberflaeche in dieser Zeit geoeffnet, erzeugte sie ein
+ * neues Merkwort und schrieb - und ws_config_write() zog die Zweitschrift
+ * config/plugins/<ordner>.wifi_scanner.backup mit. Gemessen wurde der
+ * Uebergang von "TOKEN=ECHTESMERKWORT..., USERS=2, MACS=<erfunden>" auf
+ * "TOKEN=5b09b7cf27a433e51ca1c2a9, USERS=0, MACS=" - in beiden Dateien.
+ * postupgrade.sh holt danach nur die Konfiguration zurueck, nicht die
+ * Zweitschrift; der Schaden ueberlebt das Upgrade (Fall C).
+ */
+function ws_upgrade_laeuft()
+{
+    $f = ws_upgrade_marke();
+    if (!@is_file($f)) {
+        return false;
+    }
+    $roh = @file_get_contents($f);
+    if ($roh === false) {
+        return false;
+    }
+    $roh = trim((string) $roh);
+    if (!preg_match('/^[0-9]{1,12}$/', $roh)) {
+        return false;
+    }
+    $alter = time() - (int) $roh;
+    return ($alter > -300 && $alter < 3600);
+}
+
+/** Wie alt ist die Marke? -1 = keine oder unbrauchbar. Fuer den Reiter Test. */
+function ws_upgrade_alter()
+{
+    $f = ws_upgrade_marke();
+    if (!@is_file($f)) {
+        return -1;
+    }
+    $roh = trim((string) @file_get_contents($f));
+    if (!preg_match('/^[0-9]{1,12}$/', $roh)) {
+        return -1;
+    }
+    return time() - (int) $roh;
+}
+
 /**
  * Config::Simple-INI lesen.
  *
@@ -236,7 +308,10 @@ function ws_config_read($erzeugen = true)
     $p = ws_paths();
     $out = array();
     $file = $p['config'];
-    if (!is_file($file) && $erzeugen && is_file($p['backup'])) {
+    /* Nicht heilen, solange die Marke gilt: in der Luecke holt postinstall.sh
+     * die Zweitschrift zurueck und postupgrade.sh die Sicherung. Eine
+     * Selbstheilung dazwischen legte nur einen dritten Stand daneben. */
+    if (!is_file($file) && $erzeugen && is_file($p['backup']) && !ws_upgrade_laeuft()) {
         @copy($p['backup'], $file);
     }
     if (!is_file($file)) {
@@ -287,6 +362,20 @@ function ws_cfg($cfg, $key, $default = '')
 function ws_config_write($cfg)
 {
     $p = ws_paths();
+    /* EIN Wachposten am Eingang, nicht an jedem Aufrufer.
+     *
+     * Solange die Marke gilt, wird NICHTS geschrieben - weder die
+     * Konfiguration noch die Zweitschrift daneben. Die Oberflaeche faengt das
+     * schon eine Ebene hoeher ab und sagt es dem Bediener; diese Zeile deckt
+     * den unangemeldeten Endpunkt und jeden kuenftig ergaenzten Aufrufer mit.
+     * Gemessen am 18.09.2026 (Fall B1b): ohne sie ueberschrieb ein einziger
+     * Seitenaufruf in der Luecke die Zweitschrift mit den Vorgabewerten.
+     *
+     * Fail closed: im Zweifel nicht schreiben. Der Aufrufer meldet den
+     * Fehlschlag, ein stiller Vorgabewert waere eine Annahme (CLAUDE.md 4). */
+    if (ws_upgrade_laeuft()) {
+        return false;
+    }
     @mkdir(dirname($p['config']), 0775, true);
 
     $sections = array();
@@ -583,9 +672,29 @@ function ws_cron_current()
 /**
  * Gehoert die PID unserem Listener?
  *
- * /proc/<pid>/cmdline trennt die Argumente mit Nullbytes. Verglichen wird
- * jedes der ersten beiden Argumente mit dem VOLLEN Pfad des Skripts - der
- * Listener wird immer so gestartet (Shebang oder "perl <pfad>").
+ * /proc/<pid>/cmdline trennt die Argumente mit Nullbytes. Ein Treffer hat
+ * GENAU zwei Argumente: argv[0] ist ein perl-Interpreter, argv[1] ist
+ * zeichengenau der volle Pfad unseres Skripts. Ein Einmallauf mit
+ * zusaetzlichen Argumenten ist damit kein Dienst.
+ *
+ * Bis 3.2.6 genuegte, dass IRGENDEINES der ersten beiden Argumente der Pfad
+ * war - ohne die Frage, WER die Datei in der Hand hat. Gemessen am
+ * 18.09.2026 in WSL (Pruefstaende/messe_koeder.sh):
+ *   K2  ein Koeder "tail <listenerpfad> -f" - GNU tail vertauscht Option und
+ *       Dateiname, der Pfad steht damit in argv[1] - wurde von
+ *       ws_listener_running() als Listener gemeldet (Nummer 3079100);
+ *   K3  ws_listener_stop() hat ihn daraufhin beendet ("IST TOT").
+ * Der Knopf "Dienst neu starten" im Reiter Test beendete also einen fremden
+ * Prozess, sobald jemand die Datei mit einem Werkzeug offen hatte.
+ *
+ * Bei einem Skript mit Shebang setzt der Kern argv[0] auf den INTERPRETER
+ * (/usr/bin/perl) und argv[1] auf den Skriptpfad - basename() deckt beide
+ * Schreibweisen ab (Klasse-F-Nachmessung vom 18.09.2026, Abschnitt 9).
+ *
+ * Kein Benutzerfilter: in dieser Linie startet den Listener einmal
+ * daemon/daemon als loxberry und einmal postinstall.sh/postupgrade.sh als
+ * der Benutzer des Installers. Der Eigentuemer ist hier also nicht EIN
+ * fester Wert; ein Filter darauf uebersaehe den eigenen Dienst.
  */
 function ws_ist_listener($pid, $skript)
 {
@@ -593,9 +702,45 @@ function ws_ist_listener($pid, $skript)
     if ($roh === false || $roh === '') {
         return false;
     }
+    /* Die Befehlszeile endet auf ein Nullbyte - explode() liefert dann ein
+     * leeres letztes Feld. Es gehoert nicht mitgezaehlt. */
     $args = explode("\0", $roh);
-    return (isset($args[0]) && $args[0] === $skript)
-        || (isset($args[1]) && $args[1] === $skript);
+    if ($args !== array() && end($args) === '') {
+        array_pop($args);
+    }
+    if (count($args) !== 2) {
+        return false;
+    }
+    $interpreter = basename($args[0]);
+    if ($interpreter !== 'perl' && strpos($interpreter, 'perl5') !== 0) {
+        return false;
+    }
+    return ($args[1] === $skript);
+}
+
+/**
+ * ALLE laufenden Listener, aufsteigend nach Prozessnummer.
+ *
+ * Bis 3.2.6 gab es nur ws_listener_running(), das beim ERSTEN Treffer
+ * zurueckkam - und ws_listener_stop() beendete deshalb auch nur einen.
+ * Gemessen am 18.09.2026 in WSL (Pruefstaende/messe_luecke.sh, Fall D1):
+ * "vorher: 2 ... ws_listener_stop() lieferte: 2961129 ... nachher: 1".
+ * Zwei Listener auf denselben MQTT-Themen beantworten jeden Befehl doppelt;
+ * genau diese Lage entsteht, wenn purge_installation die PID-Datei mit dem
+ * Datenordner loescht und ein zweiter Start dazukommt (Regeln/06).
+ */
+function ws_listener_alle()
+{
+    $p = ws_paths();
+    $skript = $p['bindir'] . '/mqtt_listener.pl';
+    $gefunden = array();
+    foreach ((array) @scandir('/proc') as $eintrag) {
+        if (ctype_digit((string) $eintrag) && ws_ist_listener((int) $eintrag, $skript)) {
+            $gefunden[] = (int) $eintrag;
+        }
+    }
+    sort($gefunden);
+    return $gefunden;
 }
 
 /**
@@ -610,32 +755,36 @@ function ws_ist_listener($pid, $skript)
  */
 function ws_listener_running()
 {
-    $p = ws_paths();
-    $skript = $p['bindir'] . '/mqtt_listener.pl';
-    foreach ((array) @scandir('/proc') as $eintrag) {
-        if (ctype_digit((string) $eintrag) && ws_ist_listener((int) $eintrag, $skript)) {
-            return (int) $eintrag;
-        }
-    }
-    return 0;
+    $alle = ws_listener_alle();
+    return $alle ? $alle[0] : 0;
 }
 
-/** Listener beenden - gezielt ueber die PID, nicht ueber pkill -f. */
+/**
+ * Listener beenden - gezielt ueber die Prozessnummern, nicht ueber pkill -f.
+ *
+ * ALLE eigenen, nicht nur den ersten. Zurueckgegeben wird die niedrigste
+ * beendete Nummer (wie bisher), damit die Meldungen im Reiter Test und beim
+ * Zurueckspielen unveraendert bleiben.
+ */
 function ws_listener_stop()
 {
-    $pid = ws_listener_running();
-    if (!$pid) {
+    $alle = ws_listener_alle();
+    if (!$alle) {
         return 0;
     }
-    @exec('kill ' . (int) $pid . ' 2>/dev/null');
-    for ($i = 0; $i < 10 && ws_listener_running() === $pid; $i++) {
+    foreach ($alle as $pid) {
+        @exec('kill ' . (int) $pid . ' 2>/dev/null');
+    }
+    for ($i = 0; $i < 10 && ws_listener_alle() !== array(); $i++) {
         usleep(300000);
     }
-    if (ws_listener_running() === $pid) {
+    foreach (ws_listener_alle() as $pid) {
         @exec('kill -9 ' . (int) $pid . ' 2>/dev/null');
+    }
+    if (ws_listener_alle() !== array()) {
         usleep(300000);
     }
-    return $pid;
+    return $alle[0];
 }
 
 /**

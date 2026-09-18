@@ -137,6 +137,17 @@ if ($ws_aktion !== '') {
                   . (isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '?'));
         ws_ende(403, 'WIFI;OK=0;ERR=TOKEN');
     }
+    /* Waehrend einer Aktualisierung loest dieser Endpunkt nichts aus - neu in
+     * 3.2.7. In der Luecke zwischen purge_installation und postupgrade.sh
+     * steht hier die mitgelieferte Vorgabe; ein Schreibzugriff legte sie
+     * samt Zweitschrift fest (gemessen, siehe ws_lib.php, ws_upgrade_laeuft).
+     * EINE Stelle fuer alle ausloesenden Aufrufe: einen einzelnen Handler
+     * kann man beim Erweitern vergessen, einen Wachposten am Eingang nicht.
+     * 503 heisst "vorlaeufig nicht", nicht "kaputt" - der Grund steht in der
+     * Zeile (Regeln/07). */
+    if (ws_upgrade_laeuft()) {
+        ws_ende(503, 'WIFI;OK=0;ERR=UPGRADE');
+    }
     $ws_p = ws_paths();
 
     if ($ws_aktion === 'scan') {

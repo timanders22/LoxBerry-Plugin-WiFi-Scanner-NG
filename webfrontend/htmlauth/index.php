@@ -82,6 +82,60 @@ $ws_fehler = array();
 $ws_hinweise = array();
 
 /* ------------------------------------------------------------------
+ * 1b. Laeuft gerade eine Aktualisierung?  (neu in 3.2.7)
+ *
+ * Diese Pruefung steht VOR Schritt 2, und das ist der ganze Punkt: Schritt 2
+ * liest die Konfiguration, ergaenzt die Vorgaben und erzeugt bei einem GET
+ * ein Merkwort, wenn keines dasteht - und ws_config_write() zieht dabei die
+ * Zweitschrift config/plugins/<ordner>.wifi_scanner.backup mit.
+ *
+ * In der Luecke zwischen purge_installation und postupgrade.sh ist genau das
+ * ein Schaden, und er ist gemessen (18.09.2026, WSL,
+ * Pruefung-WiFi-Scanner-NG-3.2.7/Pruefstaende/messe_luecke.sh):
+ *
+ *   Fall B1b  ein einziger Seitenaufruf machte aus
+ *             "TOKEN=ECHTESMERKWORT..., USERS=2, MACS=<erfunden>" in
+ *             BEIDEN Dateien "TOKEN=5b09b7cf27a433e51ca1c2a9, USERS=0,
+ *             MACS=".
+ *   Fall B1c  postinstall.sh holte danach nichts mehr zurueck: seine Probe
+ *             vergleicht die Pruefsumme mit der mitgelieferten Vorgabe, und
+ *             die stimmte nach dem Schreiben nicht mehr. Die Zeile
+ *             "<OK> wifi_scanner.cfg aus der Zweitschrift wiederhergestellt."
+ *             blieb aus; in der Gegenprobe C2 ohne Seitenaufruf steht sie.
+ *   Fall C    postupgrade.sh rettete die Konfiguration aus der
+ *             upgrade_sicherung - die Zweitschrift daneben blieb kaputt.
+ *             Genau aus ihr heilt ws_config_read() spaeter, und nur sie
+ *             uebersteht eine Neuinstallation.
+ *
+ * Dass gesperrt wird, ist damit eine Messung und keine Vorsichtsregel
+ * (Regeln/06: Intercom 2.2.11 sperrt, Sprachsteuerung 0.11.7 nicht).
+ *
+ * Aelter als eine Stunde oder unlesbar gilt die Marke nicht - eine
+ * abgebrochene Installation darf die Seite nicht fuer immer stilllegen.
+ * ------------------------------------------------------------------ */
+if (ws_upgrade_laeuft()) {
+    $ws_war_post = (isset($_SERVER['REQUEST_METHOD'])
+                    && $_SERVER['REQUEST_METHOD'] === 'POST');
+    if (class_exists('LBWeb', false)) {
+        LBWeb::lbheader(ws_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
+    }
+    echo '<div class="smw">' . "\n"
+       . '<h1>' . ws_e(ws_t('ALLG.TITEL')) . '</h1>' . "\n"
+       . '<div style="border:2px solid #e0620d;background:#fff4ec;'
+       . 'padding:12px 16px;margin:12px 0;border-radius:4px;">' . "\n"
+       . '<b>' . ws_e(ws_t('HINWEIS.UPGRADE_LAEUFT')) . '</b><br>' . "\n"
+       . ws_e(ws_t('HINWEIS.UPGRADE_LAEUFT_TEXT')) . "\n";
+    if ($ws_war_post) {
+        echo '<br><br>' . ws_e(ws_t('HINWEIS.UPGRADE_NICHT_GESPEICHERT')) . "\n";
+    }
+    echo '</div>' . "\n" . '</div>' . "\n";
+    if (class_exists('LBWeb', false)) {
+        LBWeb::lbfooter();
+    }
+    exit;
+}
+
+/* ------------------------------------------------------------------
  * 2. Konfiguration, Vorgaben, Merkwort
  *
  * Fehlt ein Schluessel, wird er EINMAL mit seiner Vorgabe geschrieben -
@@ -1161,6 +1215,26 @@ foreach (array('/usr/sbin/arping', '/usr/sbin/arp', '/usr/sbin/arp-scan', '/bin/
 $ws_add(ws_t('TEST.P_WERKZEUGE'), $ws_wfehlt ? 0 : 1,
     $ws_wfehlt ? sprintf(ws_t('TEST.P_WERKZEUGE_FEHLT'), ws_e(implode(', ', $ws_wfehlt)))
                : ws_t('TEST.P_WERKZEUGE_OK'));
+
+/* 11. Liegt eine Marke "Aktualisierung laeuft"?  (neu in 3.2.7)
+ *
+ * Diese Seite ist nur zu sehen, wenn die Marke NICHT gilt - sonst haette die
+ * Sperre oben schon abgebrochen. Uebrig bleiben also zwei Faelle, und beide
+ * sind einen Satz wert: gar keine Marke (der Normalfall) und eine, die
+ * liegengeblieben ist, weil eine Installation abgebrochen wurde. Die zweite
+ * ist kein Fehler, aber sie erklaert, warum der Listener zwischenzeitlich
+ * nicht startete - und ohne diese Zeile sucht der Betreiber danach im
+ * Dunkeln. CLAUDE.md, Abschnitt 6: zu jeder Regel gehoert das Werkzeug, das
+ * sie findet.
+ *
+ * ZWEITE Quelle: der Ablageort wird angezeigt, damit eine liegengebliebene
+ * Marke von Hand zu entfernen ist. */
+$ws_marke_alter = ws_upgrade_alter();
+$ws_add(ws_t('TEST.P_MARKE'), $ws_marke_alter < 0 ? 1 : 2,
+    $ws_marke_alter < 0
+        ? ws_t('TEST.P_MARKE_KEINE')
+        : sprintf(ws_t('TEST.P_MARKE_ALT'), (int) round($ws_marke_alter / 60),
+                  ws_e(ws_upgrade_marke())));
 
 $ws_ja = 0; $ws_nein = 0; $ws_strich = 0;
 foreach ($ws_z as $ws_zz) {

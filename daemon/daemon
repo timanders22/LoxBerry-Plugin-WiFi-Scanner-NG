@@ -32,19 +32,101 @@ ARGV3=$3 # Plugin installation folder
 LBHOMEDIR=${LBHOMEDIR:-$(lb_wurzel_suchen)}
 PLUGINFOLDER=${ARGV3:-wifi_ng}
 LISTENER=$LBHOMEDIR/bin/plugins/$PLUGINFOLDER/mqtt_listener.pl
+# Die Marke liegt NEBEN dem Datenordner: purge_installation loescht
+# data/plugins/<ordner>/ samt Inhalt (Regeln/06), der Nachbar mit dem Punkt
+# im Namen bleibt liegen.
+MARKE=$LBHOMEDIR/data/plugins/$PLUGINFOLDER.upgrade_laeuft
+
+# ---------------------------------------------------------------------------
+# Gehoert diese Prozessnummer unserem Listener?
+#
+# argv[0] ist ein perl, argv[1] ist ZEICHENGENAU unser Pfad, und es gibt kein
+# drittes Argument. Bis 3.2.6 stand hier "head -2 | grep -qxF <pfad>" - das
+# fragt nicht, WER die Datei in der Hand hat. Gemessen am 18.09.2026 in WSL
+# (Pruefstaende/messe_koeder.sh, Fall K1): ein Koeder "tail <listenerpfad> -f"
+# - GNU tail vertauscht Option und Dateiname, der Pfad steht damit in argv[1] -
+# galt als laufender Dienst; der Listener startete NICHT ("laeuft bereits
+# (PID 3079100)", 0 echte Listener). Dieselbe Verwechslung beendete in
+# Fall K3/K4 einen fremden Prozess.
+#
+# Kein Benutzerfilter: in dieser Linie startet den Listener einmal
+# daemon/daemon als loxberry und einmal postinstall.sh/postupgrade.sh als der
+# Benutzer, unter dem der Installer laeuft. Der Eigentuemer ist hier also
+# nicht EIN fester Wert - ein Filter darauf wuerde den eigenen Dienst
+# uebersehen. Gemessen, nicht angenommen: Fall K4 beendet den Koeder aus
+# postupgrade.sh heraus.
+# ---------------------------------------------------------------------------
+ws_ist_listener() {
+    # Die Lesbarkeitsprobe zuerst: ein Prozess, der zwischen dem Auflisten von
+    # /proc und dem Lesen endet, warf bis 3.2.6 eine Schalenfehlermeldung in
+    # das Installationsprotokoll - das "2>/dev/null" hing an tr, nicht an der
+    # Umleitung. Gemessen: 13 solche Zeilen in einem einzigen Lauf (Fall K5).
+    [ -r "/proc/$1/cmdline" ] || return 1
+    ws_n=0
+    ws_treffer=0
+    while IFS= read -r ws_arg; do
+        ws_n=$((ws_n + 1))
+        if [ "$ws_n" = 1 ]; then
+            case "${ws_arg##*/}" in
+                perl|perl5*) ;;
+                *) return 1 ;;
+            esac
+        elif [ "$ws_n" = 2 ] && [ "$ws_arg" = "$LISTENER" ]; then
+            ws_treffer=1
+        fi
+    done <<WS_ARGUMENTE
+$( { tr '\0' '\n' < "/proc/$1/cmdline"; } 2>/dev/null )
+WS_ARGUMENTE
+    [ "$ws_treffer" = 1 ] && [ "$ws_n" = 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# Laeuft gerade eine Aktualisierung dieses Plugins?
+#
+# preupgrade.sh legt die Marke als Erstes an, postupgrade.sh - das letzte
+# Hakenskript dieser Linie - entfernt sie NACH dem Start. Nur eine Marke, die
+# hoechstens eine Stunde alt ist, zaehlt: eine abgebrochene Installation darf
+# den Listener nicht fuer immer stilllegen.
+#
+# Ohne lesbare Uhr faellt die Pruefung GESCHLOSSEN aus (CLAUDE.md, Abschnitt 4).
+# Rechnete die Schale mit einer leeren Zeichenkette weiter, waere das Alter
+# negativ, die Bedingung fiele durch, und der Listener startete mitten in der
+# Aktualisierung - genau der Fall, den die Marke verhindern soll.
+#
+# WS_START_TROTZ_MARKE=1 setzt nur postupgrade.sh: dort ist die Marke die
+# eigene, und der Start ist der letzte Schritt der Installation.
+# ---------------------------------------------------------------------------
+ws_upgrade_laeuft() {
+    [ "${WS_START_TROTZ_MARKE:-0}" = "1" ] && return 1
+    [ -f "$MARKE" ] || return 1
+    ws_seit=$(cat "$MARKE" 2>/dev/null)
+    case "$ws_seit" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    ws_jetzt=$(date +%s 2>/dev/null)
+    case "$ws_jetzt" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    ws_alter=$((ws_jetzt - ws_seit))
+    [ "$ws_alter" -ge 0 ] && [ "$ws_alter" -lt 3600 ]
+}
 
 if [ -f "$LISTENER" ]; then
+    if ws_upgrade_laeuft; then
+        # Gemessen am 18.09.2026 in WSL (Pruefstaende/messe_luecke.sh, Fall
+        # B1a): in der Luecke zwischen purge_installation und postupgrade.sh
+        # startete diese Datei den Listener mit der mitgelieferten
+        # Vorgabe-Konfiguration - ohne Personen, ohne Merkwort.
+        echo "<INFO> Start uebersprungen: eine Aktualisierung dieses Plugins laeuft."
+        exit 0
+    fi
     # Laeuft schon einer? Beim Systemstart sollte das nicht vorkommen - aber
     # dieses Skript laesst sich auch von Hand aufrufen, und zwei Listener auf
     # denselben MQTT-Themen beantworten jeden Befehl doppelt.
-    #
-    # Geprueft wird ARGUMENTWEISE gegen den vollen Pfad: /proc/<pid>/cmdline
-    # trennt die Argumente mit Nullbytes, und ein "pkill -f" traefe auch
-    # einen Editor mit offener Datei oder ein zweites Exemplar des Plugins.
     LAEUFT=""
     for D in /proc/[0-9]*; do
-        P=$(basename "$D")
-        if tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null | head -2 | grep -qxF "$LISTENER"; then
+        P=${D#/proc/}
+        if ws_ist_listener "$P"; then
             LAEUFT="$P"
             break
         fi

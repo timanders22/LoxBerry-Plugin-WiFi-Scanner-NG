@@ -43,9 +43,31 @@ fi
 
 SKRIPT="$BASE/bin/plugins/$PDIR/mqtt_listener.pl"
 
+# argv[0] ist ein perl, argv[1] ist ZEICHENGENAU unser Pfad, und es gibt kein
+# drittes Argument. Bis 3.2.6 wurden nur die ersten beiden Argumente gegen den
+# Pfad gehalten, ohne zu fragen, WER die Datei in der Hand hat. Gemessen am
+# 18.09.2026 in WSL (Pruefung-WiFi-Scanner-NG-3.2.7/Pruefstaende/messe_koeder.sh):
+# ein Koeder "tail <listenerpfad> -f" - GNU tail vertauscht Option und
+# Dateiname, der Pfad steht damit in argv[1] - wurde von der gleichlautenden
+# Stelle in postupgrade.sh beendet (Fall K4). Dieses Skript laeuft als root.
 ist_unser_listener() {
     [ -r "/proc/$1/cmdline" ] || return 1
-    tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | head -2 | grep -qxF "$SKRIPT"
+    ws_n=0
+    ws_treffer=0
+    while IFS= read -r ws_arg; do
+        ws_n=$((ws_n + 1))
+        if [ "$ws_n" = 1 ]; then
+            case "${ws_arg##*/}" in
+                perl|perl5*) ;;
+                *) return 1 ;;
+            esac
+        elif [ "$ws_n" = 2 ] && [ "$ws_arg" = "$SKRIPT" ]; then
+            ws_treffer=1
+        fi
+    done <<WS_ARGUMENTE
+$( { tr '\0' '\n' < "/proc/$1/cmdline"; } 2>/dev/null )
+WS_ARGUMENTE
+    [ "$ws_treffer" = 1 ] && [ "$ws_n" = 2 ]
 }
 
 GEFUNDEN=0
@@ -140,4 +162,13 @@ UN_BASE="${5:-$LBHOMEDIR}"
 if [ -n "$UN_FOLDER" ] && [ -n "$UN_BASE" ] && [ -d "$UN_BASE/data/plugins" ]; then
     rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" 2>/dev/null
 fi
+
+# ---------- Die Marke der Aktualisierung ----------
+# Sie liegt ebenfalls NEBEN dem Datenordner und uebersteht deshalb, was
+# LoxBerry beim Deinstallieren wegraeumt. Bliebe sie liegen, sperrte sie eine
+# spaetere Neuinstallation dieses Plugins bis zu einer Stunde lang - der
+# Listener startete nicht, und die Oberflaeche zeigte nur den Hinweis.
+# $PDIR und $BASE stehen hier bewusst statt $UN_FOLDER/$UN_BASE: sie tragen
+# die Rueckfaelle vom Kopf dieser Datei.
+rm -f "$BASE/data/plugins/$PDIR.upgrade_laeuft" 2>/dev/null
 exit 0

@@ -126,6 +126,106 @@ Beim Speichern legt das Plugin eine Kopie neben dem Konfigordner ab
 (`config/plugins/<ordner>.wifi_scanner.backup`), damit die Einstellungen eine
 Neuinstallation überstehen. Das Deinstallieren entfernt sie seit 2.5.2 wieder.
 
+## Version 3.2.7 — die Aktualisierungslücke wird gesperrt
+
+Zwei Fehlerbehebungen, beide am 18.09.2026 in einer Ubuntu-WSL nachgestellt
+und gemessen. Am Gerät ist nichts davon nachgemessen.
+
+### Der Befund: ein Seitenaufruf mitten im Update löschte die Zweitschrift
+
+Beim Aktualisieren räumt LoxBerry `config/plugins/<ordner>/`,
+`data/plugins/<ordner>/` und beide Webordner ab, kopiert dann die neuen
+Dateien und ruft erst danach die Hakenskripte. Zwischen dem Abräumen und
+`postupgrade.sh` liegt am Gerät fast eine Minute. In dieser Zeit steht in
+`wifi_scanner.cfg` die mitgelieferte Vorgabe — ohne Personen, ohne Merkwort.
+
+Wurde die Oberfläche in dieser Minute geöffnet, tat sie genau das, wofür sie
+gebaut ist: sie fand kein Merkwort, erzeugte eines und speicherte. Und
+`ws_config_write()` zieht bei jedem Speichern die Zweitschrift
+`config/plugins/<ordner>.wifi_scanner.backup` mit. Gemessen wurde der
+Übergang von
+
+```
+TOKEN=ECHTESMERKWORT…   USERS=2   MACS=<zwei erfundene Adressen>
+```
+
+auf
+
+```
+TOKEN=5b09b7cf27a433e51ca1c2a9   USERS=0   MACS=
+```
+
+— in der Konfiguration **und** in der Zweitschrift. `postinstall.sh` holte
+danach nichts mehr zurück: seine Probe vergleicht die Prüfsumme mit der
+mitgelieferten Vorgabe, und die stimmte nach dem Schreiben nicht mehr.
+`postupgrade.sh` rettete zwar die Konfiguration aus der
+`upgrade_sicherung` — die Zweitschrift daneben blieb kaputt. Genau aus ihr
+heilt das Plugin später, und nur sie übersteht eine Neuinstallation. Der
+Schaden überlebte das Update also.
+
+Im selben Fenster startete `daemon/daemon` bei einem Neustart den
+MQTT-Listener mit der Vorgabe-Konfiguration.
+
+### Behoben
+
+* `preupgrade.sh` legt als **Erstes** die Marke
+  `data/plugins/<ordner>.upgrade_laeuft` mit der Unixzeit an — neben dem
+  Datenordner, weil der Ordner selbst gelöscht wird.
+* `daemon/daemon` startet nicht, solange die Marke gilt.
+* Die Oberfläche zeigt bei liegender Marke nur einen Hinweis: keine
+  Einstellungen, kein neues Merkwort, kein Speichern. Ein abgeschicktes
+  Formular wird abgewiesen und das auch gesagt.
+* `ws_config_write()` schreibt bei liegender Marke gar nichts — ein
+  Wachposten für jeden Aufrufer, auch für künftige.
+* Der Endpunkt für den Miniserver beantwortet auslösende Aufrufe in dieser
+  Zeit mit HTTP 503 und `ERR=UPGRADE`.
+* `postupgrade.sh` — das letzte Hakenskript dieses Plugins — entfernt die
+  Marke **nach** dem Start des Listeners; `uninstall` räumt sie weg.
+* Die Marke gilt höchstens eine Stunde. Ist sie älter, unlesbar oder kein
+  Zeitpunkt, wird sie übergangen: eine abgebrochene Installation darf das
+  Plugin nicht dauerhaft stilllegen. Ist die Uhr nicht lesbar, gilt sie —
+  ein Schutz fällt geschlossen aus.
+* Der Reiter Test sagt, ob eine Marke liegt, wie alt sie ist und wo.
+
+### Der zweite Befund: ein fremder Prozess wurde für den Dienst gehalten
+
+Die Suche nach dem laufenden Listener verglich bis 3.2.6 die ersten beiden
+Argumente eines Prozesses mit dem Pfad von `mqtt_listener.pl` — ohne zu
+fragen, **wer** die Datei in der Hand hat. Ein Köder `tail <pfad> -f`
+(GNU tail vertauscht Option und Dateiname, der Pfad steht damit im ersten
+Argument) genügte:
+
+* `daemon/daemon` hielt ihn für den eigenen Dienst und startete den Listener
+  **nicht**;
+* der Knopf „Listener neu starten“ im Reiter Test **beendete** ihn;
+* `postupgrade.sh` und `uninstall` ebenfalls — beide laufen als root.
+
+Seit 3.2.7 prüfen alle fünf Stellen argumentweise: das erste Argument muss
+ein perl-Interpreter sein, das zweite zeichengenau der eigene Pfad, und ein
+drittes darf es nicht geben. Ein Editor, ein `tail` oder ein zweites
+Exemplar des Plugins trifft damit nicht mehr.
+
+Kein Benutzerfilter: in diesem Plugin startet den Listener einmal
+`daemon/daemon` als `loxberry` und einmal `postinstall.sh` als der Benutzer
+des Installers. Der Eigentümer ist also nicht ein fester Wert; ein Filter
+darauf übersähe den eigenen Dienst.
+
+### Zwei Nebenbefunde derselben Messung
+
+* **Es wurde nur ein Listener beendet.** Liefen zwei — die Lage entsteht,
+  wenn das Update die PID-Datei mitlöscht und ein zweiter Start dazukommt —,
+  hielt „Listener neu starten“ genau einen an. Gemessen: vorher 2, nachher 1.
+  Jetzt gehen alle eigenen mit.
+* **Dreizehn Fehlerzeilen je Lauf im Installationsprotokoll.** Das
+  `2>/dev/null` hing an `tr`, nicht an der Umleitung; ein Prozess, der
+  während der Suche endet, erzeugte eine Meldung der Schale. Jetzt wird
+  zuerst gefragt, ob die Datei lesbar ist — so, wie `uninstall` es schon tat.
+
+### Beim Aktualisieren
+
+Nichts zu tun. Die Marke entsteht und vergeht innerhalb der Installation.
+Einstellungen, Merkwort und Zeitplan bleiben unverändert.
+
 ## Version 3.2.4 — das Lebenszeichen geht ohne Retain hinaus
 
 Eine Fehlerbehebung, am Gerät gefunden und am Broker belegt.
