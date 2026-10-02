@@ -170,6 +170,214 @@ if ($ws_zu_schreiben && ws_config_write($ws_cfg)) {
 $ws_fmt = ws_formtoken($ws_cfg);
 
 /* ------------------------------------------------------------------
+ * 2b. Einmalmeldung (PRG) und Eingaben nach einer Beanstandung (X-2)
+ *
+ * O1/O2 (Durchgang 02.10.2026; Entscheidungen 16 und 19; Regeln/04): bis
+ * 3.2.9 antwortete jeder POST mit 200 und der fertigen Seite. Neuladen
+ * wiederholte Speichern, Suchlauf, Listener-Neustart und Zurueckspielen, und
+ * nach "Neues Merkwort" stand beim Neuladen eine Fehlermeldung da, fuer die
+ * der Bediener nichts konnte (Pruefer Oberflaeche Nr. 1). Jetzt endet jeder
+ * POST mit 303 auf index.php?form=<reiter>; das Ergebnis reist in
+ * data/plugins/<ordner>/einmalmeldung.json (0600, hoechstens 120 s alt, nur
+ * beim GET gelesen und dabei geloescht). Die Downloads (Vorlage, Sicherung)
+ * liefern weiter unmittelbar ihre Datei.
+ * ------------------------------------------------------------------ */
+$ws_war_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
+$ws_misslungen = array();   // O9: "Der Vorgang ist nicht gelungen"
+$ws_eingaben = array();     // X-2: formular, werte, zeilen, falsch
+$ws_flash_datei = $ws_p['datadir'] . '/einmalmeldung.json';
+if (!$ws_war_post && is_file($ws_flash_datei)) {
+    $ws_flash = @json_decode((string) @file_get_contents($ws_flash_datei), true);
+    @unlink($ws_flash_datei);
+    $ws_flash_alter = (is_array($ws_flash) && isset($ws_flash['ts'])) ? time() - (int) $ws_flash['ts'] : 9999;
+    if ($ws_flash_alter >= -5 && $ws_flash_alter <= 120) {
+        $ws_meldungen  = ws_flash_liste($ws_flash, 'meldungen');
+        $ws_fehler     = ws_flash_liste($ws_flash, 'fehler');
+        $ws_hinweise   = ws_flash_liste($ws_flash, 'hinweise');
+        $ws_misslungen = ws_flash_liste($ws_flash, 'misslungen');
+        if (isset($ws_flash['eingaben']) && is_array($ws_flash['eingaben'])) {
+            $ws_eingaben = $ws_flash['eingaben'];
+        }
+    }
+}
+
+/** Eine Liste aus der Einmalmeldung - nur Zeichenketten. */
+function ws_flash_liste($f, $k)
+{
+    $aus = array();
+    if (is_array($f) && isset($f[$k]) && is_array($f[$k])) {
+        foreach ($f[$k] as $z) {
+            if (is_string($z)) { $aus[] = $z; }
+        }
+    }
+    return $aus;
+}
+
+/** Nach jedem POST: Ergebnis ablegen (0600, unteilbar), dann 303 auf den Reiter. */
+function ws_umleiten($tab)
+{
+    global $ws_meldungen, $ws_fehler, $ws_hinweise, $ws_misslungen, $ws_eingaben, $ws_flash_datei;
+    $js = json_encode(array('ts' => time(), 'meldungen' => $ws_meldungen, 'fehler' => $ws_fehler,
+                            'hinweise' => $ws_hinweise, 'misslungen' => $ws_misslungen,
+                            'eingaben' => $ws_eingaben),
+                      JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($js !== false) {
+        @mkdir(dirname($ws_flash_datei), 0775, true);
+        $tmp = $ws_flash_datei . '.tmp.' . getmypid();
+        $fh = @fopen($tmp, 'c');
+        if ($fh !== false) {
+            @chmod($tmp, 0600);
+            $ok = @ftruncate($fh, 0) && @fwrite($fh, $js) === strlen($js);
+            @fclose($fh);
+            if (!$ok || !@rename($tmp, $ws_flash_datei)) { @unlink($tmp); }
+        }
+    }
+    header('Location: index.php?form=' . substr((string) $tab, 4), true, 303);
+    header('Cache-Control: no-store');
+    exit;
+}
+
+/** Ein Formularfeld als Zeichenkette ('' wenn es fehlt oder ein Feld ist). */
+function ws_post_text($k)
+{
+    return (isset($_POST[$k]) && is_string($_POST[$k])) ? $_POST[$k] : '';
+}
+
+/* ---- X-2: Werte und Markierung nach einer Beanstandung (Regeln/04) ----
+ * Bauform tb_fa/tb_fw/tb_fh/tb_fm (Spotpreis Tibber, Durchgang 01.10.2026). */
+/** Ist dieses Formular das beanstandete? */
+function ws_fa($formular)
+{
+    global $ws_eingaben;
+    return is_array($ws_eingaben) && isset($ws_eingaben['formular']) && $ws_eingaben['formular'] === $formular;
+}
+/** Wert eines Feldes: nach einer Beanstandung die Eingabe, sonst der gespeicherte. */
+function ws_fw($formular, $feld, $gespeichert)
+{
+    global $ws_eingaben;
+    if (ws_fa($formular) && isset($ws_eingaben['werte'][$feld]) && is_string($ws_eingaben['werte'][$feld])) {
+        return $ws_eingaben['werte'][$feld];
+    }
+    return is_scalar($gespeichert) ? (string) $gespeichert : '';
+}
+/** Haken: nach einer Beanstandung so, wie er abgeschickt wurde. */
+function ws_fh($formular, $feld, $gespeichert)
+{
+    global $ws_eingaben;
+    if (!ws_fa($formular)) { return (bool) $gespeichert; }
+    return isset($ws_eingaben['werte'][$feld]) && $ws_eingaben['werte'][$feld] === '1';
+}
+/** Markierung eines beanstandeten Feldes (Attribute, schon maskiert). */
+function ws_fm($feld)
+{
+    global $ws_eingaben;
+    return (is_array($ws_eingaben) && isset($ws_eingaben['falsch']) && is_array($ws_eingaben['falsch'])
+            && in_array($feld, $ws_eingaben['falsch'], true))
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+/** Die abgeschickten Werte eines Formulars fuer X-2 einsammeln - nur gueltiges
+ *  UTF-8, hoechstens 2100 Zeichen je Feld, NIE das Fritz!Box-Kennwort. */
+function ws_eingaben_sammeln($formular, array $felder, array $haken, array $falsch)
+{
+    $werte = array();
+    foreach ($felder as $f) {
+        if (isset($_POST[$f]) && is_string($_POST[$f]) && strlen($_POST[$f]) <= 2100
+            && preg_match('//u', $_POST[$f])) {
+            $werte[$f] = $_POST[$f];
+        }
+    }
+    foreach ($haken as $f) {
+        if (isset($_POST[$f])) { $werte[$f] = '1'; }
+    }
+    $zeilen = array();
+    if ($formular === 'settings' && isset($_POST['username']) && is_array($_POST['username'])) {
+        foreach ($_POST['username'] as $i => $n) {
+            if (!is_string($n) || preg_match('/^[0-9]{1,3}$/', (string) $i) !== 1) { continue; }
+            $m = (isset($_POST['macs'][$i]) && is_string($_POST['macs'][$i])) ? $_POST['macs'][$i] : '';
+            if (strlen($n) > 2100 || strlen($m) > 2100 || !preg_match('//u', $n . $m)) { continue; }
+            $zeilen[] = array('i' => (int) $i, 'name' => $n, 'macs' => $m,
+                              'loeschen' => isset($_POST['uloeschen'][$i]) ? 1 : 0);
+        }
+    }
+    return array('formular' => $formular, 'werte' => $werte, 'zeilen' => $zeilen,
+                 'falsch' => array_values(array_unique($falsch)));
+}
+
+/**
+ * M2 (Durchgang 02.10.2026, Entscheidungen 5 und 8): eine ausgetragene oder
+ * umbenannte Person bekommt beim Speichern einmal "-" retained, mit Nachlesen
+ * beim Broker. Bis 3.2.9 blieb ihr letzter Wert stehen; BLE-Scanner meldete
+ * sie danach dauerhaft als anwesend (Pruefer mqtt Nr. 2, an der echten
+ * BLE-Logik gemessen). Das bis 3.2.9 gesendete Umlautthema der Person
+ * (wifi_ng/J_rgen, C3) bekommt "-" nur, wenn dort noch ein Wert liegt.
+ * Rueckgabe: array('ok' => Saetze, 'nicht' => Saetze).
+ */
+function ws_ausgetragen_abraeumen(array $alt, array $neu)
+{
+    $bleibt = array();
+    foreach (ws_users($neu) as $u) {
+        if ($u['name'] !== '' && ws_topic_name($u['name']) !== '') {
+            $bleibt['wifi_ng/' . ws_topic_name($u['name'])] = 1;
+        }
+    }
+    $weg = array();
+    $weg_alt = array();
+    foreach (ws_users($alt) as $u) {
+        if ($u['name'] === '') { continue; }
+        $t = ws_topic_name($u['name']);
+        if ($t !== '' && !isset($bleibt['wifi_ng/' . $t])) {
+            $weg['wifi_ng/' . $t] = 1;
+        }
+        $ta = ws_topic_name_alt($u['name']);
+        if ($ta !== '' && $ta !== $t && !isset($bleibt['wifi_ng/' . $ta])) {
+            $weg_alt['wifi_ng/' . $ta] = 1;
+        }
+    }
+    $erg = array('ok' => array(), 'nicht' => array());
+    if ($weg) {
+        list($rc, $aus) = ws_mqtt_aufraeumen('--strich', array_keys($weg));
+        if ($rc === 0) {
+            $erg['ok'][] = sprintf(ws_t('MELD.AUSGETRAGEN_OK'), ws_e(implode(', ', array_keys($weg))));
+        } else {
+            $erg['nicht'][] = sprintf(ws_t('MELD.AUSGETRAGEN_NICHT'), ws_e(implode(', ', array_keys($weg))),
+                                      (int) $rc, ws_e(implode(' / ', array_slice($aus, -2))));
+        }
+    }
+    if ($weg_alt) {
+        list($rc, $aus) = ws_mqtt_aufraeumen('--strich-wenn-da', array_keys($weg_alt));
+        if ($rc !== 0) {
+            $erg['nicht'][] = sprintf(ws_t('MELD.AUSGETRAGEN_NICHT'), ws_e(implode(', ', array_keys($weg_alt))),
+                                      (int) $rc, ws_e(implode(' / ', array_slice($aus, -2))));
+        }
+    }
+    return $erg;
+}
+
+/**
+ * I6 (Durchgang 02.10.2026, Entscheidungen 3 und 26): beim Wechsel von MQTT auf
+ * UDP wird der Listener angehalten (er sendete sonst beim naechsten Start
+ * status/mode, /interval und /enabled wieder retained), und die
+ * zurueckbehaltenen Themen unter wifi_ng/ werden geleert, mit Nachlesen. Bis
+ * 3.2.9 blieben sie mit dem letzten Wert stehen (Pruefer mqtt Nr. 5).
+ */
+function ws_wechsel_auf_udp()
+{
+    global $ws_meldungen, $ws_misslungen;
+    ws_listener_stop();
+    list($rc, $aus) = ws_mqtt_aufraeumen('--leeren-alle');
+    $n = 0;
+    foreach ($aus as $z) {
+        if (preg_match('/^GEFUNDEN ([0-9]+)/', (string) $z, $m) === 1) { $n = (int) $m[1]; }
+    }
+    if ($rc === 0) {
+        $ws_meldungen[] = sprintf(ws_t('MELD.UDP_ABGERAEUMT'), $n);
+    } else {
+        $ws_misslungen[] = sprintf(ws_t('MELD.UDP_NICHT_ABGERAEUMT'), (int) $rc,
+                                   ws_e(implode(' / ', array_slice($aus, -2))));
+    }
+}
+
+/* ------------------------------------------------------------------
  * 3. Der Wachposten
  *
  * htmlauth/ schuetzt gegen den unangemeldeten Aufruf - NICHT dagegen, dass
@@ -224,50 +432,106 @@ if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $ws_rei
  * Uebertragungsweg zurueck.
  * ================================================================== */
 
-/* ---------------- Einstellungen ---------------- */
+/* ---------------- Einstellungen ----------------
+ *
+ * O2 (Durchgang 02.10.2026; Entscheidungen 16 und 19): bei einer Beanstandung
+ * wird NICHTS gespeichert - auch nicht die uebrigen, richtigen Felder. Alle
+ * Beanstandungen werden gesammelt, die Felder markiert, und die Eingaben
+ * reisen mit der Einmalmeldung zurueck ins Formular (X-2); das Kennwort nie.
+ * Nichts wird mehr geklemmt oder ersetzt: bis 3.2.9 wurde aus Port 70000
+ * still 49443, aus Takt 7 still 3, und eine Person mit Tippfehler in der
+ * Adresse verschwand aus der Konfiguration (Pruefer Oberflaeche Nr. 2, 7, 8).
+ * Ausnahme nach Entscheidung 19: Leerraum am Rand wird still abgeschnitten.
+ */
 if (isset($_SERVER['REQUEST_METHOD'])
         && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $neu = ws_config_read();
+    $ws_alt = $neu;
+    $ws_mangel = array();
+    $ws_falsch = array();
 
     $neu['BASE.ENABLED']         = isset($_POST['enabled']) ? '1' : '0';
-    $neu['BASE.CRON']            = in_array((string) ($_POST['cron'] ?? '3'), ws_takte(), true)
-        ? (string) $_POST['cron'] : '3';
     $neu['BASE.FRITZBOX_ENABLE'] = isset($_POST['fritz_enable']) ? '1' : '0';
     $neu['BASE.ACTIVE_SCAN']     = isset($_POST['active_scan']) ? '1' : '0';
     $neu['BASE.USE_CACHE']       = isset($_POST['use_cache']) ? '1' : '0';
-    $neu['BASE.PING_CMD']        = ((string) ($_POST['ping_cmd'] ?? '0') === '1') ? '1' : '0';
 
-    /* Eingaben nie hart filtern - nur Steuerzeichen und Anfuehrungszeichen
-     * raus. preg_replace gibt bei ungueltigem UTF-8 null zurueck; ohne den
-     * Rueckfall wuerde daraus ein leerer Wert, und die Zeile verschwaende
-     * stillschweigend. */
+    $ws_cron_ein = trim(ws_post_text('cron'));
+    if (in_array($ws_cron_ein, ws_takte(), true)) {
+        $neu['BASE.CRON'] = $ws_cron_ein;
+    } else {
+        $ws_mangel[] = sprintf(ws_t('EINST.B_TAKT'), ws_e($ws_cron_ein), ws_e(implode(', ', ws_takte())));
+        $ws_falsch[] = 'cron';
+    }
+    $ws_ping = trim(ws_post_text('ping_cmd'));
+    if ($ws_ping === '0' || $ws_ping === '1') {
+        $neu['BASE.PING_CMD'] = $ws_ping;
+    } else {
+        $ws_mangel[] = sprintf(ws_t('EINST.B_BEFEHL'), ws_e($ws_ping));
+        $ws_falsch[] = 'ping_cmd';
+    }
+
+    /* Namen und Adresslisten: nur Steuerzeichen und Anfuehrungszeichen raus,
+     * wie bisher. preg_replace gibt bei ungueltigem UTF-8 null zurueck; ohne
+     * den Rueckfall wuerde daraus ein leerer Wert. */
     $saeubern = function ($s) {
         $r = preg_replace('/[\x00-\x1F\x7F"\']+/u', '', (string) $s);
         if ($r === null) { $r = preg_replace('/[\x00-\x1F\x7F"\']+/', '', (string) $s); }
         return trim((string) $r);
     };
+    /* Frage 4 (Durchgang 02.10.2026): im NAMEN nur noch Steuerzeichen still
+     * entfernen - Anfuehrungszeichen bleiben stehen und werden unten von
+     * ws_wert_pruefen() beanstandet (Feld markiert, Eingabe zurueck). */
+    $ohne_steuer = function ($s) {
+        $r = preg_replace('/[\x00-\x1F\x7F]+/u', '', (string) $s);
+        if ($r === null) { $r = preg_replace('/[\x00-\x1F\x7F]+/', '', (string) $s); }
+        return trim((string) $r);
+    };
 
-    $neu['BASE.FRITZBOX'] = $saeubern($_POST['fritzbox'] ?? 'fritz.box');
-    if ($neu['BASE.FRITZBOX'] === '' || ws_adresse_art($neu['BASE.FRITZBOX']) === '') {
-        $ws_hinweise[] = sprintf(ws_t('EINST.M_FRITZ_ADR'), ws_e($neu['BASE.FRITZBOX']));
-        $neu['BASE.FRITZBOX'] = ws_cfg($ws_cfg, 'BASE.FRITZBOX', 'fritz.box');
+    $ws_fb = trim(ws_post_text('fritzbox'));
+    if ($ws_fb === '' || ws_adresse_art($ws_fb) === '') {
+        $ws_mangel[] = sprintf(ws_t('EINST.M_FRITZ_ADR'), ws_e($ws_fb));
+        $ws_falsch[] = 'fritzbox';
+    } else {
+        $neu['BASE.FRITZBOX'] = $ws_fb;
     }
-    $ws_fp = (string) (int) ($_POST['fritzbox_port'] ?? 49443);
-    $neu['BASE.FRITZBOX_PORT'] = ((int) $ws_fp >= 1 && (int) $ws_fp <= 65535) ? $ws_fp : '49443';
+    $ws_fp = trim(ws_post_text('fritzbox_port'));
+    if (ws_wert_pruefen('BASE.FRITZBOX_PORT', $ws_fp) === '') {
+        $neu['BASE.FRITZBOX_PORT'] = $ws_fp;
+    } else {
+        $ws_mangel[] = sprintf(ws_t('EINST.B_PORT'), ws_e($ws_fp));
+        $ws_falsch[] = 'fritzbox_port';
+    }
 
-    /* Zugangsdaten der Fritz!Box (neu in 3.1.12, ab Werk leer).
+    /* Zugangsdaten der Fritz!Box (ab Werk leer). O5: Anfuehrungszeichen werden
+     * nicht mehr still entfernt, sondern abgewiesen (ws_wert_pruefen). O7: es
+     * gelten dieselben Grenzen wie beim Zurueckspielen.
      *
      * Ein leeres Kennwortfeld LOESCHT nichts: der Browser fuellt ein
-     * type="password"-Feld nicht mit dem Bestand, und wer nur den Takt
-     * aendert, haette sonst bei jedem Speichern das Kennwort verloren. Zum
-     * Loeschen gibt es den ausdruecklichen Haken daneben. */
-    $neu['BASE.FRITZBOX_USER'] = $saeubern($_POST['fritzbox_user'] ?? '');
+     * type="password"-Feld nicht mit dem Bestand. Zum Loeschen gibt es den
+     * ausdruecklichen Haken daneben. */
+    $ws_fu = trim(ws_post_text('fritzbox_user'));
+    $ws_g = ws_wert_pruefen('BASE.FRITZBOX_USER', $ws_fu);
+    if ($ws_g === '') {
+        $neu['BASE.FRITZBOX_USER'] = $ws_fu;
+    } else {
+        $ws_mangel[] = sprintf(ws_t('EINST.B_FRITZ_USER'), ws_e($ws_g));
+        $ws_falsch[] = 'fritzbox_user';
+    }
     if (isset($_POST['fritz_pass_loeschen'])) {
         $neu['BASE.FRITZBOX_PASS'] = '';
     } else {
-        $ws_pw = (string) ($_POST['fritzbox_pass'] ?? '');
-        $neu['BASE.FRITZBOX_PASS'] = ($ws_pw !== '')
-            ? $saeubern($ws_pw) : ws_cfg($ws_cfg, 'BASE.FRITZBOX_PASS', '');
+        $ws_pw = trim(ws_post_text('fritzbox_pass'));
+        if ($ws_pw === '') {
+            $neu['BASE.FRITZBOX_PASS'] = ws_cfg($ws_cfg, 'BASE.FRITZBOX_PASS', '');
+        } else {
+            $ws_g = ws_wert_pruefen('BASE.FRITZBOX_PASS', $ws_pw);
+            if ($ws_g === '') {
+                $neu['BASE.FRITZBOX_PASS'] = $ws_pw;
+            } else {
+                $ws_mangel[] = sprintf(ws_t('EINST.B_FRITZ_PASS'), ws_e($ws_g));
+                $ws_falsch[] = 'fritzbox_pass';
+            }
+        }
     }
 
     // Uebertragungsweg und Merkwort wohnen anderswo - hier aus dem Bestand
@@ -278,42 +542,65 @@ if (isset($_SERVER['REQUEST_METHOD'])
 
     /* Personen.
      *
-     * Die Formularfelder tragen AUSGESCHRIEBENE Indizes (username[0],
-     * username[1], ...) und je Zeile den urspruenglichen Abschnittsnamen in
-     * einem versteckten Feld. Bis 3.1.11 hingen die Felder an der Position:
-     * ein nicht angehakter Loeschhaken sendet gar nichts, und damit waeren
-     * alle folgenden Zeilen um eine verrutscht.
+     * Die Formularfelder tragen AUSGESCHRIEBENE Indizes (username[0], ...).
+     * Geloescht wird ueber den Haken, nicht durch Leeren des Namens.
      *
-     * Geloescht wird ueber den Haken, nicht durch Leeren des Namens. Bis
-     * 3.1.11 wurde eine Zeile ohne Namen ODER ohne Adresse stillschweigend
-     * verworfen - wer nur den Namen berichtigen wollte und ihn dabei kurz
-     * leerte, verlor die ganze Adressliste ohne eine einzige Meldung. */
+     * O2: eine Zeile mit ungueltiger Adresse, ohne Namen oder ohne Adresse ist
+     * eine Beanstandung - sie wird markiert, nicht geloescht. O3: eine MAC mit
+     * Bindestrichen wird ausdruecklich benannt. O4: gleiche oder leere
+     * Themennamen ("Anna B"/"Anna_B", "???", "李雷") sind eine Beanstandung. */
     $ws_roh = array();
+    $ws_themen_zeilen = array();
     $namen = isset($_POST['username']) && is_array($_POST['username']) ? $_POST['username'] : array();
     foreach ($namen as $i => $name) {
-        if (isset($_POST['uloeschen'][$i])) {
+        if (!is_string($name) || isset($_POST['uloeschen'][$i])) {
             continue;   // ausdruecklich abgewaehlt
         }
-        $name = $saeubern($name);
-        $liste = $saeubern(isset($_POST['macs'][$i]) ? $_POST['macs'][$i] : '');
+        $name = $ohne_steuer($name);
+        $liste = $saeubern(isset($_POST['macs'][$i]) && is_string($_POST['macs'][$i]) ? $_POST['macs'][$i] : '');
         if ($name === '' && $liste === '') {
             continue;   // leere Anlegezeile - kein Verlust, keine Meldung
         }
+        $ws_wer = $name !== '' ? $name : ws_t('EINST.OHNE_NAME');
         list($gut, $schlecht) = ws_adressen_zerlegen($liste);
-        if ($schlecht) {
-            $ws_hinweise[] = sprintf(ws_t('EINST.M_ADR_ABGEWIESEN'),
-                ws_e($name !== '' ? $name : ws_t('EINST.OHNE_NAME')),
-                ws_e(implode(', ', $schlecht)));
+        $ws_strich = array_values(array_filter($schlecht, 'ws_ist_mac_strich'));
+        $ws_sonst = array_values(array_diff($schlecht, $ws_strich));
+        if ($ws_strich) {
+            $ws_mangel[] = sprintf(ws_t('EINST.M_MAC_STRICH'), ws_e($ws_wer), ws_e(implode(', ', $ws_strich)));
+            $ws_falsch[] = 'macs[' . (int) $i . ']';
+        }
+        if ($ws_sonst) {
+            $ws_mangel[] = sprintf(ws_t('EINST.M_ADR_ABGEWIESEN'), ws_e($ws_wer), ws_e(implode(', ', $ws_sonst)));
+            $ws_falsch[] = 'macs[' . (int) $i . ']';
         }
         if ($name === '') {
-            $ws_hinweise[] = sprintf(ws_t('EINST.M_OHNE_NAME'), ws_e(implode(', ', $gut)));
+            $ws_mangel[] = sprintf(ws_t('EINST.M_OHNE_NAME'), ws_e(implode(', ', $gut)));
+            $ws_falsch[] = 'username[' . (int) $i . ']';
             continue;
         }
-        if (!$gut) {
-            $ws_hinweise[] = sprintf(ws_t('EINST.M_OHNE_ADRESSE'), ws_e($name));
-            continue;
+        if (!$gut && !$schlecht) {
+            $ws_mangel[] = sprintf(ws_t('EINST.M_OHNE_ADRESSE'), ws_e($name));
+            $ws_falsch[] = 'macs[' . (int) $i . ']';
+        }
+        $ws_g = ws_wert_pruefen('USER1.NAME', $name);
+        if ($ws_g !== '') {
+            $ws_mangel[] = sprintf(ws_t('EINST.B_NAME'), ws_e($name), ws_e($ws_g));
+            $ws_falsch[] = 'username[' . (int) $i . ']';
+        }
+        $ws_t = ws_topic_name($name);
+        if ($ws_t !== '') {
+            $ws_themen_zeilen[$ws_t][] = array((int) $i, $name);
         }
         $ws_roh[] = array('name' => $name, 'macs' => implode(';', $gut));
+    }
+    foreach ($ws_themen_zeilen as $ws_t => $ws_zl) {
+        if (count($ws_zl) < 2) { continue; }
+        $ws_nn = array();
+        foreach ($ws_zl as $ws_z1) {
+            $ws_nn[] = $ws_z1[1];
+            $ws_falsch[] = 'username[' . $ws_z1[0] . ']';
+        }
+        $ws_mangel[] = sprintf(ws_t('EINST.M_THEMA_DOPPELT'), ws_e('wifi_ng/' . $ws_t), ws_e(implode(', ', $ws_nn)));
     }
     // Alte Personenabschnitte entfernen, danach neu durchnummerieren.
     foreach (array_keys($neu) as $k) {
@@ -329,17 +616,33 @@ if (isset($_SERVER['REQUEST_METHOD'])
     }
     $neu['BASE.USERS'] = (string) $n;
 
-    /* Dieselbe Adresse bei zwei Personen ist ein Mangel, keine Sperre:
-     * gespeichert wird, aber der Bediener erfaehrt es. Sonst gilt die zweite
-     * Person immer als anwesend, sobald die erste zu Hause ist. */
-    foreach (ws_doppelte_adressen(ws_users($neu)) as $ws_adr => $ws_wer) {
-        $ws_hinweise[] = sprintf(ws_t('EINST.M_DOPPELT'), ws_e($ws_adr), ws_e(implode(', ', $ws_wer)));
-    }
-
-    if (ws_config_write($neu)) {
+    if ($ws_mangel) {
+        $ws_fehler[] = ws_t('EINST.B_KOPF') . '<ul><li>' . implode('</li><li>', $ws_mangel) . '</li></ul>';
+        $ws_eingaben = ws_eingaben_sammeln('settings',
+            array('cron', 'ping_cmd', 'fritzbox', 'fritzbox_port', 'fritzbox_user'),
+            array('enabled', 'fritz_enable', 'active_scan', 'use_cache', 'fritz_pass_loeschen'), $ws_falsch);
+    } elseif (ws_config_write($neu)) {
         ws_cron_apply($neu['BASE.ENABLED'], $neu['BASE.CRON']);
-        ws_listener_restart();
-        $ws_meldungen[] = ws_t('MELD.GESPEICHERT_ZUSATZ');
+        $ws_meldungen[] = ws_t('MELD.ZEITPLAN_NEU');
+        /* Dieselbe Adresse bei zwei Personen ist ein Mangel, keine Sperre:
+         * gespeichert wird, aber der Bediener erfaehrt es. */
+        foreach (ws_doppelte_adressen(ws_users($neu)) as $ws_adr => $ws_wer) {
+            $ws_hinweise[] = sprintf(ws_t('EINST.M_DOPPELT'), ws_e($ws_adr), ws_e(implode(', ', $ws_wer)));
+        }
+        /* O9: der Listener-Satz nur bei MQTT, und "neu gestartet" nur, wenn er
+         * danach laeuft - sonst steht er unter "nicht gelungen" (bis 3.2.9 stand
+         * der Erfolgssatz auch neben "MQTT-Listener: laeuft nicht"). */
+        if (ws_cfg($neu, 'BASE.UDP_ENABLE', '0') !== '1') {
+            $ws_ab = ws_ausgetragen_abraeumen($ws_alt, $neu);
+            foreach ($ws_ab['ok'] as $ws_x) { $ws_meldungen[] = $ws_x; }
+            foreach ($ws_ab['nicht'] as $ws_x) { $ws_misslungen[] = $ws_x; }
+            $ws_lpid = ws_listener_restart();
+            if ($ws_lpid) {
+                $ws_meldungen[] = sprintf(ws_t('MELD.LISTENER_NEU'), (int) $ws_lpid);
+            } else {
+                $ws_misslungen[] = ws_t('MELD.LISTENER_NICHT');
+            }
+        }
         $ws_cfg = ws_config_read();
         $ws_fmt = ws_formtoken($ws_cfg);
     } else {
@@ -348,16 +651,40 @@ if (isset($_SERVER['REQUEST_METHOD'])
     $ws_tab = 'tab-settings';
 }
 
-/* ---------------- MQTT / Uebertragungsweg ---------------- */
+/* ---------------- MQTT / Uebertragungsweg ----------------
+ * O2: ein ungueltiger UDP-Port wird beanstandet, nicht geklemmt (bis 3.2.9
+ * wurde aus 0 und 7007.9 still 7007). I6: Wechsel auf UDP raeumt ab. */
 if (isset($_SERVER['REQUEST_METHOD'])
         && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
     $neu = ws_config_read();
-    $neu['BASE.UDP_ENABLE'] = ((string) ($_POST['out_way'] ?? 'mqtt') === 'udp') ? '1' : '0';
-    $ws_up = (string) (int) ($_POST['udpport'] ?? 7007);
-    $neu['BASE.PORT'] = ((int) $ws_up >= 1 && (int) $ws_up <= 65535) ? $ws_up : '7007';
-    if (ws_config_write($neu)) {
-        ws_listener_restart();
-        $ws_meldungen[] = ws_t('MELD.GESPEICHERT_ZUSATZ');
+    $ws_war_udp = ws_cfg($neu, 'BASE.UDP_ENABLE', '0') === '1';
+    $ws_mangel = array();
+    $ws_falsch = array();
+    $neu['BASE.UDP_ENABLE'] = (ws_post_text('out_way') === 'udp') ? '1' : '0';
+    $ws_up = trim(ws_post_text('udpport'));
+    if (ws_wert_pruefen('BASE.PORT', $ws_up) === '') {
+        $neu['BASE.PORT'] = $ws_up;
+    } else {
+        $ws_mangel[] = sprintf(ws_t('EINST.B_UDPPORT'), ws_e($ws_up));
+        $ws_falsch[] = 'udpport';
+    }
+    if ($ws_mangel) {
+        $ws_fehler[] = ws_t('EINST.B_KOPF') . '<ul><li>' . implode('</li><li>', $ws_mangel) . '</li></ul>';
+        $ws_eingaben = ws_eingaben_sammeln('mqtt', array('out_way', 'udpport'), array(), $ws_falsch);
+    } elseif (ws_config_write($neu)) {
+        $ws_meldungen[] = ws_t('MELD.WEG_GESPEICHERT');
+        if ($neu['BASE.UDP_ENABLE'] === '1') {
+            if (!$ws_war_udp) {
+                ws_wechsel_auf_udp();
+            }
+        } else {
+            $ws_lpid = ws_listener_restart();
+            if ($ws_lpid) {
+                $ws_meldungen[] = sprintf(ws_t('MELD.LISTENER_NEU'), (int) $ws_lpid);
+            } else {
+                $ws_misslungen[] = ws_t('MELD.LISTENER_NICHT');
+            }
+        }
         $ws_cfg = ws_config_read();
         $ws_fmt = ws_formtoken($ws_cfg);
     } else {
@@ -392,7 +719,8 @@ if (isset($_SERVER['REQUEST_METHOD'])
     if ($ws_a === 'scan') {
         $bin = $ws_p['bindir'] . '/check.pl';
         if (is_file($bin)) {
-            @exec('nohup perl ' . escapeshellarg($bin) . ' > /dev/null 2>&1 &');
+            // C13: --auftrag - sucht auch bei ausgeschaltetem regelmaessigem Suchen.
+            @exec('nohup perl ' . escapeshellarg($bin) . ' --auftrag > /dev/null 2>&1 &');
             $ws_meldungen[] = ws_t('TEST.M_SCAN');
         } else {
             $ws_fehler[] = sprintf(ws_t('T.NICHT_GEFUNDEN'), 'check.pl', ws_e($bin));
@@ -471,7 +799,9 @@ if (isset($_SERVER['REQUEST_METHOD'])
     } elseif ((int) $_FILES['ws_sicherung']['size'] > 65536) {
         $ws_fehler[] = ws_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($ws_neu, $ws_mangel, $ws_n) = ws_sicherung_lesen(
+        $ws_war_udp = ws_cfg($ws_cfg, 'BASE.UDP_ENABLE', '0') === '1';
+        $ws_alt_r = ws_config_read();   // Frage 3: die Personen VOR dem Zurueckspielen
+        list($ws_neu, $ws_mangel, $ws_n, $ws_sh) = ws_sicherung_lesen(
             (string) @file_get_contents($_FILES['ws_sicherung']['tmp_name']));
         if ($ws_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert
@@ -479,9 +809,28 @@ if (isset($_SERVER['REQUEST_METHOD'])
             $ws_fehler[] = ws_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $ws_mangel);
         } elseif (ws_config_write($ws_neu)) {
             ws_cron_apply(ws_cfg($ws_neu, 'BASE.ENABLED', '0'), ws_cfg($ws_neu, 'BASE.CRON', '3'));
-            $ws_lpid = ws_listener_restart();
-            $ws_meldungen[] = sprintf(ws_t('EINST.SICH_UEBERNOMMEN'), $ws_n)
-                . ' ' . ws_t($ws_lpid ? 'EINST.SICH_DIENST_LAEUFT' : 'EINST.SICH_DIENST_AUS');
+            $ws_meldungen[] = sprintf(ws_t('EINST.SICH_UEBERNOMMEN'), $ws_n);
+            foreach ($ws_sh as $ws_x) { $ws_hinweise[] = $ws_x; }
+            /* O9: der Listener-Satz nur bei MQTT und "nachgezogen" nur bei Erfolg;
+             * I6: bringt die Sicherung den Wechsel auf UDP, wird abgeraeumt. */
+            if (ws_cfg($ws_neu, 'BASE.UDP_ENABLE', '0') === '1') {
+                if (!$ws_war_udp) {
+                    ws_wechsel_auf_udp();
+                }
+            } else {
+                /* Frage 3 (Durchgang 02.10.2026, Entscheidungen 5/8/16): traegt die
+                 * Sicherung Personen aus oder benennt sie um, bekommen deren alte
+                 * Themen einmal "-" retained - wie M2 beim Speichern. */
+                $ws_ab = ws_ausgetragen_abraeumen($ws_alt_r, $ws_neu);
+                foreach ($ws_ab['ok'] as $ws_x) { $ws_meldungen[] = $ws_x; }
+                foreach ($ws_ab['nicht'] as $ws_x) { $ws_misslungen[] = $ws_x; }
+                $ws_lpid = ws_listener_restart();
+                if ($ws_lpid) {
+                    $ws_meldungen[] = ws_t('EINST.SICH_DIENST_LAEUFT');
+                } else {
+                    $ws_misslungen[] = ws_t('EINST.SICH_DIENST_AUS');
+                }
+            }
             $ws_cfg = ws_config_read();
             $ws_fmt = ws_formtoken($ws_cfg);
         } else {
@@ -491,15 +840,37 @@ if (isset($_SERVER['REQUEST_METHOD'])
     $ws_tab = 'tab-settings';
 }
 
+/* ---------------- PRG (O1, Durchgang 02.10.2026) ----------------
+ * Jeder POST endet hier mit 303 - auch einer, den der Wachposten abgewiesen
+ * hat. Die beiden Downloads oben sind vorher mit exit ausgestiegen. */
+if ($ws_war_post) {
+    ws_umleiten($ws_tab);
+}
+
 /* ==================================================================
  * 6. Ab hier wird ausgegeben
  * ================================================================== */
 
 $ws_users = ws_users($ws_cfg);
-$ws_zeigen = $ws_users;
+$ws_zeigen = array();
+if (ws_fa('settings') && isset($ws_eingaben['zeilen']) && is_array($ws_eingaben['zeilen'])) {
+    /* X-2: nach einer Beanstandung stehen die abgeschickten Zeilen da - auch
+     * eine mit ungueltiger Adresse; sie ist markiert, nicht geloescht (O2). */
+    foreach ($ws_eingaben['zeilen'] as $ws_ez) {
+        if (!is_array($ws_ez) || !isset($ws_ez['i'], $ws_ez['name'], $ws_ez['macs'])) { continue; }
+        $ws_zeigen[(int) $ws_ez['i']] = array('schluessel' => '', 'name' => (string) $ws_ez['name'],
+                                              'macs' => (string) $ws_ez['macs'],
+                                              'loeschen' => !empty($ws_ez['loeschen']));
+    }
+} else {
+    foreach ($ws_users as $u) {
+        $ws_zeigen[] = $u + array('loeschen' => false);
+    }
+}
 // immer zwei leere Zeilen zum Anlegen anbieten
-$ws_zeigen[] = array('schluessel' => '', 'name' => '', 'macs' => '');
-$ws_zeigen[] = array('schluessel' => '', 'name' => '', 'macs' => '');
+$ws_naechste = $ws_zeigen ? max(array_keys($ws_zeigen)) + 1 : 0;
+$ws_zeigen[$ws_naechste] = array('schluessel' => '', 'name' => '', 'macs' => '', 'loeschen' => false);
+$ws_zeigen[$ws_naechste + 1] = array('schluessel' => '', 'name' => '', 'macs' => '', 'loeschen' => false);
 
 $ws_log_file = ws_log_file('wifi_scanner');
 $ws_log_lines = ws_log_tail($ws_log_file);
@@ -519,6 +890,9 @@ $ws_frame = class_exists('LBWeb', false);
 if ($ws_frame) {
     LBWeb::lbheader(ws_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
 }
+/* O8: die Seite wird gepuffert; ws_formzeile_einsetzen() zaehlt am Ende die
+ * Formulare im fertigen HTML und setzt die Zeile im Reiter Test ein. */
+ob_start();
 $ws_dir = ws_e($ws_p['plugin']);
 
 /** Die Anwesenheit einer Person aus dem Abbild - -1, wenn unbekannt. */
@@ -638,6 +1012,8 @@ function ws_person_zustand(array $z, $name, $frisch)
 .sm-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
 .sm-log { background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em;
     padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
+/* Eigene Ergaenzung (Durchgang 02.10.2026, X-2): ein beanstandetes Feld. */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 </style>
 <div class="sm-wrap">
 
@@ -646,6 +1022,9 @@ function ws_person_zustand(array $z, $name, $frisch)
 <?php } ?>
 <?php foreach ($ws_fehler as $ws_f) { ?>
 <div class="sm-alert sm-err"><b><?php echo ws_e(ws_t('ALLG.FEHLER')); ?></b> <?= $ws_f ?></div>
+<?php } ?>
+<?php if ($ws_misslungen) { ?>
+<div class="sm-alert sm-err"><b><?php echo ws_e(ws_t('MELD.NICHT_GELUNGEN')); ?></b><ul><li><?= implode('</li><li>', $ws_misslungen) ?></li></ul></div>
 <?php } ?>
 <?php foreach ($ws_hinweise as $ws_hw) { ?>
 <div class="sm-warnung"><?= $ws_hw ?></div>
@@ -688,6 +1067,11 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $ws_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= ws_e(ws_t('LEGENDE.LESEN')) ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?= ws_e(ws_t('LEGENDE.TECHNIK')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= ws_e(ws_t('LEGENDE.AKTION')) ?></span>
+</div>
 
 <h2><?= ws_e(ws_t('EINST.H_ZUSTAND')) ?></h2>
 <?php if (!$ws_users) { ?>
@@ -726,10 +1110,10 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <tr><th style="width:26%;"><?= ws_e(ws_t('ALLG.NAME')) ?></th><th><?= ws_e(ws_t('EINST.SP_ADRESSEN')) ?></th><th style="width:22%;"><?= ws_e(ws_t('ALLG.MQTT_THEMA')) ?></th><th style="width:10%;"><?= ws_e(ws_t('EINST.SP_LOESCHEN')) ?></th></tr>
 <?php foreach ($ws_zeigen as $ws_i => $u) { ?>
 <tr>
-    <td><input data-role="none" type="text" name="username[<?= (int) $ws_i ?>]" value="<?= ws_e($u['name']) ?>" placeholder="<?= ws_e(ws_t('EINST.PH_NAME')) ?>"><input data-role="none" type="hidden" name="uschluessel[<?= (int) $ws_i ?>]" value="<?= ws_e($u['schluessel']) ?>"></td>
-    <td><input data-role="none" type="text" name="macs[<?= (int) $ws_i ?>]" value="<?= ws_e($u['macs']) ?>" placeholder="aa:bb:cc:dd:ee:ff; 192.168.1.44"></td>
+    <td><input data-role="none" type="text" name="username[<?= (int) $ws_i ?>]" value="<?= ws_e($u['name']) ?>"<?= ws_fm('username[' . (int) $ws_i . ']') ?> placeholder="<?= ws_e(ws_t('EINST.PH_NAME')) ?>"><input data-role="none" type="hidden" name="uschluessel[<?= (int) $ws_i ?>]" value="<?= ws_e($u['schluessel']) ?>"></td>
+    <td><input data-role="none" type="text" name="macs[<?= (int) $ws_i ?>]" value="<?= ws_e($u['macs']) ?>"<?= ws_fm('macs[' . (int) $ws_i . ']') ?> placeholder="aa:bb:cc:dd:ee:ff; 192.168.1.44"></td>
     <td class="sm-hilfe" style="padding-top:12px;"><?= $u['name'] !== '' ? 'wifi_ng/' . ws_e(ws_topic_name($u['name'])) : '—' ?></td>
-    <td style="text-align:center;padding-top:12px;"><?php if ($u['name'] !== '') { ?><input data-role="none" type="checkbox" name="uloeschen[<?= (int) $ws_i ?>]" value="1"><?php } else { echo '—'; } ?></td>
+    <td style="text-align:center;padding-top:12px;"><?php if ($u['name'] !== '') { ?><input data-role="none" type="checkbox" name="uloeschen[<?= (int) $ws_i ?>]" value="1" <?= !empty($u['loeschen']) ? 'checked' : '' ?>><?php } else { echo '—'; } ?></td>
 </tr>
 <?php } ?>
 </table>
@@ -739,16 +1123,16 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <h2><?= ws_e(ws_t('EINST.H_ZEITPLAN')) ?></h2>
 <div class="sm-row">
 <div>
-    <label class="sm-check"><input data-role="none" type="checkbox" name="enabled" value="1" <?= $ws_ein ? 'checked' : '' ?>> <?= ws_e(ws_t('EINST.L_PERIODISCH')) ?></label>
+    <label class="sm-check"><input data-role="none" type="checkbox" name="enabled" value="1" <?= ws_fh('settings', 'enabled', $ws_ein) ? 'checked' : '' ?>> <?= ws_e(ws_t('EINST.L_PERIODISCH')) ?></label>
     <div class="sm-hilfe"><?= ws_t('EINST.HINT_PERIODISCH') ?></div>
 </div>
 <div>
     <label><?= ws_e(ws_t('EINST.L_TAKT')) ?></label>
-    <select data-role="none" name="cron">
+    <select data-role="none" name="cron"<?= ws_fm('cron') ?>>
     <?php foreach (array('1' => ws_t('TAKT.MIN01'), '3' => ws_t('TAKT.MIN03'), '5' => ws_t('TAKT.MIN05'),
                          '10' => ws_t('TAKT.MIN10'), '15' => ws_t('TAKT.MIN15'), '30' => ws_t('TAKT.MIN30'),
                          '60' => ws_t('TAKT.STUENDLICH')) as $v => $t) { ?>
-        <option value="<?= ws_e($v) ?>" <?= (string) ws_cfg($ws_cfg, 'BASE.CRON', '3') === $v ? 'selected' : '' ?>><?= ws_e($t) ?></option>
+        <option value="<?= ws_e($v) ?>" <?= ws_fw('settings', 'cron', ws_cfg($ws_cfg, 'BASE.CRON', '3')) === (string) $v ? 'selected' : '' ?>><?= ws_e($t) ?></option>
     <?php } ?>
     </select>
     <div class="sm-hilfe"><?= ws_t('EINST.HINT_TAKT') ?></div>
@@ -758,11 +1142,11 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <h2><?= ws_e(ws_t('EINST.H_SUCHE')) ?></h2>
 <div class="sm-row">
 <div>
-    <label class="sm-check"><input data-role="none" type="checkbox" name="fritz_enable" value="1" <?= ws_cfg($ws_cfg, 'BASE.FRITZBOX_ENABLE', '0') === '1' ? 'checked' : '' ?>> <?= ws_e(ws_t('EINST.L_FRITZ')) ?></label>
+    <label class="sm-check"><input data-role="none" type="checkbox" name="fritz_enable" value="1" <?= ws_fh('settings', 'fritz_enable', ws_cfg($ws_cfg, 'BASE.FRITZBOX_ENABLE', '0') === '1') ? 'checked' : '' ?>> <?= ws_e(ws_t('EINST.L_FRITZ')) ?></label>
     <div class="sm-hilfe"><?= ws_t('EINST.HINT_FRITZ') ?></div>
 </div>
 <div>
-    <label class="sm-check"><input data-role="none" type="checkbox" name="active_scan" value="1" <?= ws_cfg($ws_cfg, 'BASE.ACTIVE_SCAN', '0') === '1' ? 'checked' : '' ?>> <?= ws_e(ws_t('EINST.L_AKTIV')) ?></label>
+    <label class="sm-check"><input data-role="none" type="checkbox" name="active_scan" value="1" <?= ws_fh('settings', 'active_scan', ws_cfg($ws_cfg, 'BASE.ACTIVE_SCAN', '0') === '1') ? 'checked' : '' ?>> <?= ws_e(ws_t('EINST.L_AKTIV')) ?></label>
     <div class="sm-hilfe"><?= ws_t('EINST.HINT_AKTIV') ?></div>
 </div>
 </div>
@@ -771,11 +1155,11 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <div class="sm-row">
 <div>
     <label><?= ws_e(ws_t('EINST.L_FRITZ_ADR')) ?></label>
-    <input data-role="none" type="text" name="fritzbox" value="<?= ws_e(ws_cfg($ws_cfg, 'BASE.FRITZBOX', 'fritz.box')) ?>">
+    <input data-role="none" type="text" name="fritzbox" value="<?= ws_e(ws_fw('settings', 'fritzbox', ws_cfg($ws_cfg, 'BASE.FRITZBOX', 'fritz.box'))) ?>"<?= ws_fm('fritzbox') ?>>
 </div>
 <div>
     <label><?= ws_e(ws_t('EINST.L_FRITZ_PORT')) ?></label>
-    <input data-role="none" type="number" name="fritzbox_port" value="<?= ws_e(ws_cfg($ws_cfg, 'BASE.FRITZBOX_PORT', '49443')) ?>">
+    <input data-role="none" type="<?= ws_fm('fritzbox_port') !== '' ? 'text' : 'number' ?>" name="fritzbox_port" value="<?= ws_e(ws_fw('settings', 'fritzbox_port', ws_cfg($ws_cfg, 'BASE.FRITZBOX_PORT', '49443'))) ?>"<?= ws_fm('fritzbox_port') ?>>
 </div>
 </div>
 
@@ -784,26 +1168,26 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <div class="sm-row">
 <div>
     <label><?= ws_e(ws_t('EINST.L_FRITZ_USER')) ?></label>
-    <input data-role="none" type="text" name="fritzbox_user" value="<?= ws_e(ws_cfg($ws_cfg, 'BASE.FRITZBOX_USER', '')) ?>" autocomplete="off">
+    <input data-role="none" type="text" name="fritzbox_user" value="<?= ws_e(ws_fw('settings', 'fritzbox_user', ws_cfg($ws_cfg, 'BASE.FRITZBOX_USER', ''))) ?>"<?= ws_fm('fritzbox_user') ?> autocomplete="off">
 </div>
 <div>
     <label><?= ws_e(ws_t('EINST.L_FRITZ_PASS')) ?></label>
-    <input data-role="none" type="password" name="fritzbox_pass" value="" autocomplete="new-password"
+    <input data-role="none" type="password" name="fritzbox_pass" value="" autocomplete="new-password"<?= ws_fm('fritzbox_pass') ?>
            placeholder="<?= ws_cfg($ws_cfg, 'BASE.FRITZBOX_PASS', '') !== '' ? ws_e(ws_t('EINST.PH_PASS_GESETZT')) : ws_e(ws_t('EINST.PH_PASS_LEER')) ?>">
-    <label class="sm-check" style="margin-top:6px;"><input data-role="none" type="checkbox" name="fritz_pass_loeschen" value="1"> <?= ws_e(ws_t('EINST.L_PASS_LOESCHEN')) ?></label>
+    <label class="sm-check" style="margin-top:6px;"><input data-role="none" type="checkbox" name="fritz_pass_loeschen" value="1" <?= ws_fh('settings', 'fritz_pass_loeschen', false) ? 'checked' : '' ?>> <?= ws_e(ws_t('EINST.L_PASS_LOESCHEN')) ?></label>
 </div>
 </div>
 
 <div class="sm-row">
 <div>
     <label><?= ws_e(ws_t('EINST.L_BEFEHL')) ?></label>
-    <select data-role="none" name="ping_cmd">
-        <option value="0" <?= (string) ws_cfg($ws_cfg, 'BASE.PING_CMD', '0') === '0' ? 'selected' : '' ?>><?= ws_e(ws_t('EINST.OPT_ARPING')) ?></option>
-        <option value="1" <?= (string) ws_cfg($ws_cfg, 'BASE.PING_CMD', '0') === '1' ? 'selected' : '' ?>><?= ws_e(ws_t('EINST.OPT_PING')) ?></option>
+    <select data-role="none" name="ping_cmd"<?= ws_fm('ping_cmd') ?>>
+        <option value="0" <?= ws_fw('settings', 'ping_cmd', ws_cfg($ws_cfg, 'BASE.PING_CMD', '0')) === '0' ? 'selected' : '' ?>><?= ws_e(ws_t('EINST.OPT_ARPING')) ?></option>
+        <option value="1" <?= ws_fw('settings', 'ping_cmd', ws_cfg($ws_cfg, 'BASE.PING_CMD', '0')) === '1' ? 'selected' : '' ?>><?= ws_e(ws_t('EINST.OPT_PING')) ?></option>
     </select>
 </div>
 <div>
-    <label class="sm-check" style="margin-top:34px;"><input data-role="none" type="checkbox" name="use_cache" value="1" <?= ws_cfg($ws_cfg, 'BASE.USE_CACHE', '1') === '1' ? 'checked' : '' ?>> <?= ws_e(ws_t('EINST.L_CACHE')) ?></label>
+    <label class="sm-check" style="margin-top:34px;"><input data-role="none" type="checkbox" name="use_cache" value="1" <?= ws_fh('settings', 'use_cache', ws_cfg($ws_cfg, 'BASE.USE_CACHE', '1') === '1') ? 'checked' : '' ?>> <?= ws_e(ws_t('EINST.L_CACHE')) ?></label>
     <div class="sm-hilfe"><?= ws_t('EINST.HINT_CACHE') ?></div>
 </div>
 </div>
@@ -816,6 +1200,9 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <h2><?= ws_e(ws_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= ws_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= ws_t('EINST.SICH_WARNUNG') ?></div>
+<?php $ws_x3 = ws_sicherung_warnungen($ws_cfg); if ($ws_x3) { ?>
+<div class="sm-warnung"><?php printf(ws_t('EINST.SICH_X3'), ws_e(implode(', ', $ws_x3))); ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -848,15 +1235,13 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="1"><?= ws_e(ws_t('ALLG.K_VORLAGE')) ?></button>
   </form>
 </div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= ws_e(ws_t('LEGENDE.LESEN')) ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?= ws_e(ws_t('LEGENDE.TECHNIK')) ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= ws_e(ws_t('LEGENDE.AKTION')) ?></span>
-</div>
 </div>
 
 <!-- ================= Reiter: MQTT / Uebertragungsweg ================= -->
 <div class="sm-seite<?= $ws_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= ws_e(ws_t('LEGENDE.SPEICHERN')) ?></span>
+</div>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
 <input data-role="none" type="hidden" name="mqtt_save" value="1">
@@ -866,14 +1251,14 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <div>
     <label><?= ws_e(ws_t('EINST.L_UEBERTRAGUNG')) ?></label>
     <select data-role="none" name="out_way">
-        <option value="mqtt" <?= !$ws_udp ? 'selected' : '' ?>><?= ws_e(ws_t('EINST.OPT_MQTT')) ?></option>
-        <option value="udp" <?= $ws_udp ? 'selected' : '' ?>><?= ws_e(ws_t('EINST.OPT_UDP')) ?></option>
+        <option value="mqtt" <?= ws_fw('mqtt', 'out_way', $ws_udp ? 'udp' : 'mqtt') !== 'udp' ? 'selected' : '' ?>><?= ws_e(ws_t('EINST.OPT_MQTT')) ?></option>
+        <option value="udp" <?= ws_fw('mqtt', 'out_way', $ws_udp ? 'udp' : 'mqtt') === 'udp' ? 'selected' : '' ?>><?= ws_e(ws_t('EINST.OPT_UDP')) ?></option>
     </select>
     <div class="sm-hilfe"><?= ws_t('EINST.HINT_UEBERTRAGUNG') ?></div>
 </div>
 <div>
     <label><?= ws_e(ws_t('EINST.L_UDPPORT')) ?></label>
-    <input data-role="none" type="number" name="udpport" value="<?= ws_e(ws_cfg($ws_cfg, 'BASE.PORT', '7007')) ?>">
+    <input data-role="none" type="<?= ws_fm('udpport') !== '' ? 'text' : 'number' ?>" name="udpport" value="<?= ws_e(ws_fw('mqtt', 'udpport', ws_cfg($ws_cfg, 'BASE.PORT', '7007'))) ?>"<?= ws_fm('udpport') ?>>
 </div>
 </div>
 
@@ -894,14 +1279,15 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <div class="sm-knopfreihe" style="margin-top:18px;">
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= ws_e(ws_t('ALLG.SPEICHERN')) ?></button>
 </div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= ws_e(ws_t('LEGENDE.SPEICHERN')) ?></span>
-</div>
 </form>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-seite<?= $ws_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= ws_e(ws_t('LEGENDE.TECHNIK')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= ws_e(ws_t('LEGENDE.AKTION')) ?></span>
+</div>
 <h2><?= ws_e(ws_t('REITER.LOXONE')) ?></h2>
 <div class="sm-hilfe"><?= ws_t('LOX.EINLEITUNG') ?></div>
 
@@ -1001,14 +1387,15 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= ws_e(ws_t('LOX.K_MERKWORT_NEU')) ?></button>
   </form>
 </div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= ws_e(ws_t('LEGENDE.TECHNIK')) ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= ws_e(ws_t('LEGENDE.AKTION')) ?></span>
-</div>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
 <div class="sm-seite<?= $ws_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= ws_e(ws_t('LEGENDE.LESEN')) ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?= ws_e(ws_t('LEGENDE.TECHNIK')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= ws_e(ws_t('LEGENDE.AKTION')) ?></span>
+</div>
 <h2><?= ws_e(ws_t('REITER.TEST')) ?></h2>
 
 <h3 class="sm-h3"><?= ws_e(ws_t('TEST.H_SELBST')) ?></h3>
@@ -1073,15 +1460,12 @@ list($ws_ro, $ws_rt) = $ws_probe($ws_reiter, __FILE__);
 $ws_add(ws_t('TEST.P_REITER'), $ws_ro, $ws_rt);
 
 // 4. Tragen alle Formulare das Merkmal?
-$ws_src = (string) @file_get_contents(__FILE__);
-if ($ws_src === '') {
-    $ws_add(ws_t('TEST.P_FORM'), 2, ws_t('TEST.P_NICHT_LESBAR'));
-} else {
-    $ws_anz_form = preg_match_all('/<form[^>]*method="post"/i', $ws_src);
-    $ws_anz_fmt  = preg_match_all('/name="fmt"/', $ws_src);
-    $ws_add(ws_t('TEST.P_FORM'), ($ws_anz_form > 0 && $ws_anz_fmt >= $ws_anz_form) ? 1 : 0,
-        sprintf(ws_t('TEST.P_FORM_ZAHL'), (int) $ws_anz_fmt, (int) $ws_anz_form));
-}
+//    O8 (Durchgang 02.10.2026): gezaehlt wird JE FORMULAR am gerenderten HTML,
+//    nicht am Quelltext. Bis 3.2.9 zaehlte die Zeile das Suchmuster in dieser
+//    Datei - und damit sich selbst mit: einem Formular das Merkmal entnommen,
+//    stand weiter ein Haken da (Pruefer Oberflaeche Nr. 11). Das Ergebnis setzt
+//    ws_formzeile_einsetzen() am Ende ein, wenn die Seite fertig ist.
+$ws_add(ws_t('TEST.P_FORM'), 9, '');
 
 // 5. Stimmt die Themenliste mit dem Sendecode ueberein?
 //    Gezaehlt wird gegen die publish/retain-Zeilen der beiden Perl-Skripte.
@@ -1207,14 +1591,37 @@ $ws_dopp = ws_doppelte_adressen($ws_users);
 $ws_add(ws_t('TEST.P_DOPPELT'), $ws_dopp ? 0 : 1,
     $ws_dopp ? ws_e(implode('; ', array_keys($ws_dopp))) : ws_t('TEST.P_DOPPELT_KEINE'));
 
-// 10. Werkzeuge
-$ws_wfehlt = array();
-foreach (array('/usr/sbin/arping', '/usr/sbin/arp', '/usr/sbin/arp-scan', '/bin/ping') as $ws_w) {
-    if (!is_executable($ws_w)) { $ws_wfehlt[] = basename($ws_w); }
+// 10. Werkzeuge - wo liegen sie, und passt die sudoers-Regel?
+//     I7 (Durchgang 02.10.2026): check.pl nimmt das erste ausfuehrbare unter
+//     /usr/sbin, /sbin, /usr/bin, /bin und ruft es ueber sudo auf. Die sudoers-Regel
+//     des Plugins nennt nur /usr/sbin/<werkzeug>; liegt es anderswo, weist sudo den
+//     Aufruf ab. Bis 3.2.9 wollte postinstall.sh dafuer einen Verweis in /usr/sbin
+//     anlegen - als loxberry ohne Wirkung (Installer-Pruefer Nr. 7). Jetzt sagt
+//     diese Zeile, wo die Werkzeuge liegen.
+$ws_wteile = array();
+$ws_wschlecht = 0;
+foreach (array('arping', 'arp', 'arp-scan') as $ws_w) {
+    $ws_wort = '';
+    foreach (array('/usr/sbin', '/sbin', '/usr/bin', '/bin') as $ws_wd) {
+        if (is_executable($ws_wd . '/' . $ws_w)) { $ws_wort = $ws_wd . '/' . $ws_w; break; }
+    }
+    if ($ws_wort === '') {
+        $ws_wteile[] = sprintf(ws_t('TEST.P_WZ_FEHLT'), ws_e($ws_w));
+        $ws_wschlecht++;
+    } elseif ($ws_wort === '/usr/sbin/' . $ws_w) {
+        $ws_wteile[] = sprintf(ws_t('TEST.P_WZ_PASST'), ws_e($ws_wort));
+    } else {
+        $ws_wteile[] = sprintf(ws_t('TEST.P_WZ_ANDERS'), ws_e($ws_wort), ws_e('/usr/sbin/' . $ws_w));
+        $ws_wschlecht++;
+    }
 }
-$ws_add(ws_t('TEST.P_WERKZEUGE'), $ws_wfehlt ? 0 : 1,
-    $ws_wfehlt ? sprintf(ws_t('TEST.P_WERKZEUGE_FEHLT'), ws_e(implode(', ', $ws_wfehlt)))
-               : ws_t('TEST.P_WERKZEUGE_OK'));
+if (is_executable('/bin/ping')) {
+    $ws_wteile[] = sprintf(ws_t('TEST.P_WZ_PING'), '/bin/ping');
+} else {
+    $ws_wteile[] = sprintf(ws_t('TEST.P_WZ_FEHLT'), 'ping');
+    $ws_wschlecht++;
+}
+$ws_add(ws_t('TEST.P_WERKZEUGE'), $ws_wschlecht ? 0 : 1, implode('<br>', $ws_wteile));
 
 /* 11. Liegt eine Marke "Aktualisierung laeuft"?  (neu in 3.2.7)
  *
@@ -1238,6 +1645,12 @@ $ws_add(ws_t('TEST.P_MARKE'), $ws_marke_alter < 0 ? 1 : 2,
 
 $ws_ja = 0; $ws_nein = 0; $ws_strich = 0;
 foreach ($ws_z as $ws_zz) {
+    if ($ws_zz['ok'] === 9) {
+        // O8: Platzhalter - eingesetzt in ws_formzeile_einsetzen()
+        echo '<tr><td>' . ws_e($ws_zz['frage']) . '</td><td style="text-align:center;"><!--WS_FORM_SYM--></td>'
+           . '<td><!--WS_FORM_TEXT--></td></tr>' . "\n";
+        continue;
+    }
     if ($ws_zz['ok'] === 1) { $ws_ja++; } elseif ($ws_zz['ok'] === 0) { $ws_nein++; } else { $ws_strich++; }
     $ws_sym = $ws_zz['ok'] === 1 ? '<span class="sm-an">✓</span>'
             : ($ws_zz['ok'] === 0 ? '<span class="sm-aus">✗</span>' : '–');
@@ -1247,7 +1660,7 @@ foreach ($ws_z as $ws_zz) {
 ?>
 </table>
 </div>
-<div class="sm-hilfe"><?php printf(ws_t('TEST.P_BILANZ'), $ws_ja, $ws_nein, $ws_strich); ?></div>
+<div class="sm-hilfe"><!--WS_BILANZ--></div>
 
 <h3 class="sm-h3"><?= ws_e(ws_t('TEST.H_ANSEHEN')) ?></h3>
 <div class="sm-knopfreihe">
@@ -1276,11 +1689,6 @@ foreach ($ws_z as $ws_zz) {
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="aktion" value="restart"><?= ws_e(ws_t('TEST.K_RESTART')) ?></button>
   </form>
-</div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= ws_e(ws_t('LEGENDE.LESEN')) ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?= ws_e(ws_t('LEGENDE.TECHNIK')) ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= ws_e(ws_t('LEGENDE.AKTION')) ?></span>
 </div>
 <div class="sm-hilfe" style="margin-top:14px;"><?= ws_t('TEST.ERKLAERUNG') ?></div>
 </div>
@@ -1321,6 +1729,39 @@ foreach ($ws_z as $ws_zz) {
 })();
 </script>
 <?php
+echo ws_formzeile_einsetzen((string) ob_get_clean(), $ws_ja, $ws_nein, $ws_strich);
 if ($ws_frame) {
     LBWeb::lbfooter();
+}
+
+/**
+ * O8: die Zeile "Tragen alle Formulare das Merkmal?" am FERTIGEN HTML - jedes
+ * Formular muss ein Merkmal mit 64 Hexzeichen tragen. Das Suchmuster ist
+ * zusammengesetzt, damit diese Datei es nicht selbst enthaelt (CLAUDE.md 6).
+ */
+function ws_formzeile_einsetzen($html, $ja, $nein, $strich)
+{
+    $feld = '/name="f' . 'mt" value="[0-9a-f]{64}"/';
+    $treffer = array();
+    preg_match_all('/<form\b[^>]*>.*?<\/form>/is', $html, $treffer);
+    $formen = isset($treffer[0]) ? $treffer[0] : array();
+    $ohne = 0;
+    foreach ($formen as $f) {
+        if (preg_match($feld, $f) !== 1) { $ohne++; }
+    }
+    if (!$formen) {
+        $sym = '–';
+        $text = ws_t('TEST.P_FORM_KEINE');
+        $strich++;
+    } elseif ($ohne) {
+        $sym = '<span class="sm-aus">✗</span>';
+        $text = sprintf(ws_t('TEST.P_FORM_OHNE'), $ohne, count($formen));
+        $nein++;
+    } else {
+        $sym = '<span class="sm-an">✓</span>';
+        $text = sprintf(ws_t('TEST.P_FORM_ZAHL'), count($formen));
+        $ja++;
+    }
+    return str_replace(array('<!--WS_FORM_SYM-->', '<!--WS_FORM_TEXT-->', '<!--WS_BILANZ-->'),
+                       array($sym, $text, sprintf(ws_t('TEST.P_BILANZ'), $ja, $nein, $strich)), $html);
 }

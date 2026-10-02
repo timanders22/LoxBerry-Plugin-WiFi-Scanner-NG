@@ -77,14 +77,17 @@ WS_ARGUMENTE
     [ "$ws_treffer" = 1 ] && [ "$ws_n" = 2 ]
 }
 
-if [ -f "$LISTENER" ]; then
-    echo "<INFO> Starting WifiScanner MQTT listener"
-    chmod +x "$LISTENER"
-    # Auf das Ende WARTEN, bevor der neue startet. Bis 3.1.11 folgte der
-    # Start unmittelbar auf das kill - der alte Prozess haengt dann noch am
-    # Broker, und zwei Listener beantworten jeden Befehl doppelt. In
-    # postupgrade.sh war genau das seit 2.5.2 behoben; hier stand weiter der
-    # alte Ablauf. Ein Widerspruch in der eigenen Datei ist eine Fehlerquelle.
+# I5 (Durchgang 02.10.2026): angehalten und gestartet wird erst am ENDE dieses
+# Skripts, NACH dem Zurueckspielen. Bis 3.2.9 startete der Listener hier, vor
+# dem Zurueckspielen und ohne Blick auf die Upgrade-Marke - er las die
+# mitgelieferte Vorgabe und sendete status/mode, /interval und /enabled daraus
+# retained (Installer-Pruefer Nr. 5, Faelle U1 und N1). Bei liegender Marke
+# wird nur angehalten; postupgrade.sh startet ihn mit der zurueckgespielten
+# Konfiguration (Regeln/06).
+#
+# Auf das Ende WARTEN, bevor ein neuer startet: der alte haengt sonst noch am
+# Broker, und zwei Listener beantworten jeden Befehl doppelt.
+ws_listener_anhalten() {
     for D in /proc/[0-9]*; do
         P=${D#/proc/}
         if ws_ist_listener "$P"; then
@@ -96,31 +99,20 @@ if [ -f "$LISTENER" ]; then
             kill -9 "$P" 2>/dev/null
         fi
     done
+}
+ws_listener_starten() {
+    [ -f "$LISTENER" ] || return 0
+    echo "<INFO> Starting WifiScanner MQTT listener"
+    chmod +x "$LISTENER"
     nohup perl "$LISTENER" > /dev/null 2>&1 &
-fi
+}
 
-# Exit with Status 0
-# ---------------------------------------------------------------------------
-# Verweise fuer arp, arping und arp-scan
-#
-# Die sudoers-Datei dieses Plugins nennt die Pfade unter /usr/sbin. Seit dem
-# usr-merge in Debian 12/13 koennen die Programme aber auch unter /usr/bin
-# liegen - dann findet sudo den in der Regel eingetragenen Pfad nicht, und
-# der Aufruf wird abgewiesen. Ein Verweis loest das, ohne die sudoers-Datei
-# aufzuweichen: dort darf weiterhin genau ein Pfad je Programm stehen.
-for W in arp arping arp-scan; do
-    if [ ! -e "/usr/sbin/$W" ]; then
-        ECHT=$(command -v "$W" 2>/dev/null)
-        if [ -n "$ECHT" ]; then
-            ln -sfn "$ECHT" "/usr/sbin/$W" 2>/dev/null \
-                && echo "<OK> Verweis angelegt: /usr/sbin/$W -> $ECHT" \
-                || echo "<INFO> Verweis /usr/sbin/$W liess sich nicht anlegen (nicht als root?)."
-        else
-            echo "<INFO> $W ist nicht installiert - das Paket steht in dpkg/apt."
-        fi
-    fi
-done
-
+# I7 (Durchgang 02.10.2026): hier stand bis 3.2.9 ein Block, der fuer arp,
+# arping und arp-scan Verweise in /usr/sbin anlegen sollte. postinstall.sh
+# laeuft als loxberry; am Geraet hat er deshalb nie etwas angelegt, und als
+# root angelegte Verweise blieben nach der Deinstallation liegen
+# (Installer-Pruefer Nr. 7, Fall S1). Wo die Werkzeuge liegen und ob die
+# sudoers-Regel passt, zeigt jetzt der Reiter Test.
 
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
 # Zurueckspielen aus der Zweitschrift - aber NUR, wenn die Datei des Nutzers
@@ -226,7 +218,21 @@ netz_zurueck() {   # netz_zurueck <datei> <pruefsumme der vorgabe> cfg|abo
     echo "<WARNING> $datei liess sich nicht zurueckspielen. Die Sicherung"
     echo "<WARNING> liegt unter $zweit und kann von Hand kopiert werden."
 }
-netz_zurueck "mqtt_subscriptions.cfg" "8e8f8a5e3c6ba7c6fbfe7d6fed9f81f663067d3964501f51ad051cd65d6d5d98" abo
-netz_zurueck "wifi_scanner.cfg" "30bcb5717482b3b0aa670ce91a023ab7100fac5db98d0e271e879555a541fc3a" cfg
+# I1 (Durchgang 02.10.2026, Entscheidung 1): zurueckgespielt wird NUR bei
+# liegender Upgrade-Marke - ohne Altersgrenze. Bis 3.2.9 fragte netz_zurueck
+# die Marke nie ab und spielte bei jeder Neuinstallation die Zweitschriften
+# einer frueheren Installation ein (Installer-Pruefer Nr. 1). preinstall.sh hat
+# sie in diesem Fall schon nach .alt gelegt.
+WS_MARKE="$NETZ_BASE/data/plugins/$NETZ_PDIR.upgrade_laeuft"
+if [ -f "$WS_MARKE" ]; then
+    netz_zurueck "mqtt_subscriptions.cfg" "8e8f8a5e3c6ba7c6fbfe7d6fed9f81f663067d3964501f51ad051cd65d6d5d98" abo
+    netz_zurueck "wifi_scanner.cfg" "30bcb5717482b3b0aa670ce91a023ab7100fac5db98d0e271e879555a541fc3a" cfg
+    # I5: nur anhalten - postupgrade.sh startet mit der zurueckgespielten Konfiguration.
+    ws_listener_anhalten
+else
+    echo "<INFO> Neuinstallation - aus Zweitschriften wird nichts zurueckgespielt."
+    ws_listener_anhalten
+    ws_listener_starten
+fi
 
 exit 0

@@ -1013,6 +1013,18 @@ function ws_topic_name($name)
 }
 
 /**
+ * Das Thema, das check.pl bis 3.2.9 aus diesem Namen gebildet hat (C3,
+ * Durchgang 02.10.2026): dieselbe Ersetzung, aber auf den BYTES - die
+ * Umlautliste griff dort nie. Aus "Jürgen" wurde wifi_ng/J_rgen. Gebraucht
+ * beim Austragen einer Person (M2), damit auch dieses alte Thema "-" bekommt.
+ */
+function ws_topic_name_alt($name)
+{
+    $t = preg_replace('/[^A-Za-z0-9_-]+/', '_', (string) $name);
+    return trim((string) $t, '_');
+}
+
+/**
  * Ist das eine brauchbare Geraeteadresse?
  *
  * Rueckgabe: 'mac', 'ip4', 'ip6', 'host' - oder '' fuer "nein".
@@ -1043,6 +1055,12 @@ function ws_adresse_art($a)
     if (filter_var($a, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
         return 'ip6';
     }
+    // O3 (Durchgang 02.10.2026): eine MAC-Adresse mit Bindestrichen
+    // (Schreibweise von ipconfig /all) ist nie ein Rechnername. Bis 3.2.9 wurde
+    // sie als "host" angenommen, gespeichert und nie gefunden - ohne Hinweis.
+    if (ws_ist_mac_strich($a)) {
+        return '';
+    }
     // Rechnername nach RFC 1123: Buchstaben, Ziffern, Bindestrich, Punkt -
     // kein Bindestrich am Anfang oder Ende eines Teils, kein reiner Zahlname.
     if (preg_match('/^(?![0-9.]+$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
@@ -1050,6 +1068,12 @@ function ws_adresse_art($a)
         return 'host';
     }
     return '';
+}
+
+/** O3: eine MAC-Adresse mit Bindestrichen statt Doppelpunkten? */
+function ws_ist_mac_strich($a)
+{
+    return preg_match('/^([0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}$/', (string) $a) === 1;
 }
 
 /**
@@ -1146,7 +1170,9 @@ function ws_zustand_datei()
  */
 function ws_zustand_lesen()
 {
-    $leer = array('ts' => 0, 'ok' => -1, 'weg' => '', 'fehler' => '', 'personen' => array());
+    // C4 (Durchgang 02.10.2026): zaehler gehoert dazu. Bis 3.2.9 fehlte der
+    // Schluessel, und der Endpunkt meldete ZAEHLER=-1 bei laufendem Takt.
+    $leer = array('ts' => 0, 'ok' => -1, 'zaehler' => -1, 'weg' => '', 'fehler' => '', 'personen' => array());
     $f = ws_zustand_datei();
     if (!is_file($f)) {
         return $leer;
@@ -1158,6 +1184,7 @@ function ws_zustand_lesen()
     return array(
         'ts'       => isset($j['ts']) ? (int) $j['ts'] : 0,
         'ok'       => isset($j['ok']) ? (int) $j['ok'] : -1,
+        'zaehler'  => isset($j['zaehler']) && is_numeric($j['zaehler']) ? (int) $j['zaehler'] : -1,
         'weg'      => isset($j['weg']) ? (string) $j['weg'] : '',
         'fehler'   => isset($j['fehler']) ? (string) $j['fehler'] : '',
         'personen' => isset($j['personen']) && is_array($j['personen']) ? $j['personen'] : array(),
@@ -1180,9 +1207,12 @@ function ws_zustand_alter(?array $z = null)
 /**
  * Gilt der letzte Lauf als frisch?
  *
- * Frisch heisst: nicht aelter als das Dreifache des eingestellten Takts,
- * mindestens aber 10 Minuten. Der Zuschlag ist noetig, weil ein Lauf mit
- * zwanzig Geraeten und arping -c 20 laenger dauern kann als ein Takt.
+ * Frisch heisst: nicht aelter als das Dreifache des eingestellten Takts
+ * (Entscheidung 4 des Hausherrn; Bauliste C5, Durchgang 02.10.2026). Bis
+ * 3.2.9 galten mindestens 10 Minuten - bei einem Takt von 1 Minute wurde ein
+ * Ausfall erst nach 10 statt nach 3 Minuten gemeldet (Pruefer code Nr. 6,
+ * mqtt Nr. 12). Die Untergrenze ist entfallen; Hilfe und Feldtabelle nennen
+ * die Schwelle.
  */
 function ws_zustand_frisch(?array $cfg = null, ?array $z = null)
 {
@@ -1193,7 +1223,16 @@ function ws_zustand_frisch(?array $cfg = null, ?array $z = null)
     }
     $takt = (int) ws_cfg($cfg, 'BASE.CRON', '3');
     if ($takt <= 0) { $takt = 3; }
-    return $alter <= max(600, $takt * 60 * 3);
+    return $alter <= ws_frist_sekunden($cfg);
+}
+
+/** Die Schwelle fuer OK in Sekunden: das Dreifache des Takts (C5). */
+function ws_frist_sekunden(?array $cfg = null)
+{
+    if ($cfg === null) { $cfg = ws_config_read(false); }
+    $takt = (int) ws_cfg($cfg, 'BASE.CRON', '3');
+    if ($takt <= 0) { $takt = 3; }
+    return $takt * 60 * 3;
 }
 
 /* ==================================================================
@@ -1232,6 +1271,20 @@ function ws_vorgaben()
     );
 }
 
+/** O7 (Durchgang 02.10.2026): die Grenzen gelten beim Speichern UND beim
+ *  Zurueckspielen - aus dieser einen Quelle. Bis 3.2.9 nahm die Oberflaeche
+ *  einen Namen mit 69 Byte an, und die eigene Sicherung wurde danach
+ *  abgewiesen (Pruefer Oberflaeche Nr. 10). */
+function ws_name_max()
+{
+    return 64;
+}
+
+function ws_kennwort_max()
+{
+    return 128;
+}
+
 /** Welche Schluessel tragen ein Geheimnis? Fuer Anzeige und Protokoll. */
 function ws_geheime_schluessel()
 {
@@ -1242,6 +1295,8 @@ function ws_geheime_schluessel()
  * Einen Wert fuer die Anzeige maskieren.
  *
  * Die Form eines Geheimnisses darf beurteilt werden, der Wert nie angezeigt.
+ * Fuer das Fritz!Box-Kennwort gilt seit dem Durchgang vom 02.10.2026 die
+ * strengere Form aus ws_kennwort_anzeige() (O10).
  * Deshalb die Laenge und die ersten drei Zeichen - das genuegt, um "steht
  * ueberhaupt etwas darin" und "ist es das erwartete" zu beantworten.
  */
@@ -1252,6 +1307,22 @@ function ws_maskieren($v)
         return '';
     }
     return substr($v, 0, 3) . str_repeat('.', 3) . ' (' . strlen($v) . ')';
+}
+
+/**
+ * O10 (Durchgang 02.10.2026): das Fritz!Box-Kennwort zeigt nur, DASS es
+ * gesetzt ist, und wie lang es ist - kein einziges Zeichen daraus. Bis 3.2.9
+ * standen die ersten drei Zeichen in ws_test.php?config (Pruefer Oberflaeche
+ * Nr. 13). Regeln/05: ein Pruefknopf beurteilt die Form, nie den Wert.
+ */
+function ws_kennwort_anzeige($v)
+{
+    $v = (string) $v;
+    if ($v === '') {
+        return '';
+    }
+    $n = preg_match_all('/./us', $v);
+    return sprintf(ws_t('T.GESETZT_ZEICHEN'), $n !== false && $n > 0 ? $n : strlen($v));
 }
 
 /**
@@ -1296,13 +1367,40 @@ function ws_wert_pruefen($schluessel, $wert)
         return ($w === '' || preg_match('/^[0-9a-f]{16,64}$/', $w) === 1) ? '' : 'kein gueltiges Merkwort';
     }
     if ($schluessel === 'BASE.FRITZBOX_USER' || $schluessel === 'BASE.FRITZBOX_PASS') {
-        return strlen($w) <= 128 ? '' : 'zu lang';
+        if (strlen($w) > ws_kennwort_max()) {
+            return 'zu lang (hoechstens ' . ws_kennwort_max() . ' Zeichen)';
+        }
+        /* O5 (Durchgang 02.10.2026): Anfuehrungszeichen lassen sich im Format
+         * von Config::Simple nicht so ablegen, dass beide Seiten (diese
+         * Bibliothek und check.pl) sie unveraendert lesen - ein Paar am Rand
+         * nimmt der Leser weg, und wie Config::Simple ein einzelnes behandelt,
+         * ist nicht gemessen. Bis 3.2.9 wurden sie beim Speichern STILL
+         * entfernt; die Anmeldung scheiterte dann mit 401 (Pruefer Oberflaeche
+         * Nr. 6). Jetzt abgewiesen, mit Hinweis. */
+        if (strpbrk($w, '"\'') !== false) {
+            return 'Anfuehrungszeichen sind hier nicht moeglich';
+        }
+        return '';
     }
     if (preg_match('/^USER[0-9]+[.]NAME$/', $schluessel) === 1) {
-        return ($w !== '' && strlen($w) <= 64) ? '' : 'Name fehlt oder ist zu lang';
+        if ($w === '' || strlen($w) > ws_name_max()) {
+            return 'Name fehlt oder ist zu lang (hoechstens ' . ws_name_max() . ' Byte)';
+        }
+        /* Frage 4 (Durchgang 02.10.2026, Entscheidung 19): Anfuehrungszeichen im
+         * Namen werden beanstandet, nicht mehr still entfernt (bis 3.2.9 wurde aus
+         * "O'Brien" beim Speichern still "OBrien"). */
+        if (strpbrk($w, '"\'') !== false) {
+            return 'Anfuehrungszeichen sind im Namen nicht moeglich';
+        }
+        // O4: aus dem Namen muss ein MQTT-Thema entstehen (nicht "???" oder "李雷").
+        return ws_topic_name($w) !== '' ? '' : 'ergibt kein MQTT-Thema';
     }
     if (preg_match('/^USER[0-9]+[.]MACS$/', $schluessel) === 1) {
         list($gut, $schlecht) = ws_adressen_zerlegen($w);
+        if ($schlecht && array_filter($schlecht, 'ws_ist_mac_strich')) {
+            return 'MAC-Adresse mit Bindestrichen, bitte mit Doppelpunkten: '
+                 . implode(' ', array_slice(array_values(array_filter($schlecht, 'ws_ist_mac_strich')), 0, 3));
+        }
         if ($schlecht) {
             return 'keine gueltige Adresse: ' . implode(' ', array_slice($schlecht, 0, 3));
         }
@@ -1339,6 +1437,8 @@ function ws_sicherung_lesen($roh)
     $neu = ws_vorgaben();
     $bekannt = array_keys($neu);
     $anzahl = 0;
+    $hinweise = array();
+    $token_leer = false;
     foreach ($daten as $k => $w) {
         $k = (string) $k;
         /* Der lesbare Kopf der eigenen Sicherungsdatei (_hinweis, _stand)
@@ -1360,6 +1460,16 @@ function ws_sicherung_lesen($roh)
             $mangel[] = sprintf(ws_t('EINST.SICH_FREMD'), ws_e($k));
             continue;
         }
+        /* O6 (Durchgang 02.10.2026, Klasse 10): ein LEERES Merkwort in der
+         * Datei wird nicht uebernommen - das geltende bleibt. Bis 3.2.9 stand
+         * danach TOKEN= leer, der naechste Seitenaufruf wuerfelte still ein
+         * neues, und jede Adresse im Miniserver bekam 403 (Pruefer Oberflaeche
+         * Nr. 9). */
+        if ($k === 'BASE.TOKEN' && is_string($w) && trim($w) === '') {
+            $token_leer = true;
+            $hinweise[] = ws_t('EINST.SICH_TOKEN_LEER');
+            continue;
+        }
         $grund = ws_wert_pruefen($k, $w);
         if ($grund !== '') {
             $mangel[] = sprintf(ws_t('EINST.SICH_WERT'), ws_e($k), ws_e($grund));
@@ -1372,6 +1482,15 @@ function ws_sicherung_lesen($roh)
      * Anzahl, und zu jeder Nummer bis dahin gehoert NAME und MACS. Fehlt
      * einer, faende check.pl eine Person ohne Adressen und meldete sie
      * jeden Lauf als abwesend. */
+    if ($token_leer) {
+        $neu['BASE.TOKEN'] = ws_token(ws_config_read(false));
+    }
+    /* O4 (Durchgang 02.10.2026): zwei Personen, aus denen dasselbe Thema
+     * entsteht ("Anna B" und "Anna_B", "Jürgen" und "Juergen"), sind eine
+     * Beanstandung - sonst schreiben beide retained auf ein Thema. */
+    foreach (ws_themen_doppelt($neu) as $ws_dt => $ws_dn) {
+        $mangel[] = sprintf(ws_t('EINST.SICH_THEMA_DOPPELT'), ws_e('wifi_ng/' . $ws_dt), ws_e(implode(', ', $ws_dn)));
+    }
     if (!$mangel) {
         $n = (int) $neu['BASE.USERS'];
         for ($i = 1; $i <= $n; $i++) {
@@ -1415,7 +1534,111 @@ function ws_sicherung_lesen($roh)
         $mangel[] = sprintf(ws_t('EINST.SICH_FEHLEND'), count($fehlend),
             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    return array($mangel ? null : $neu, $mangel, $anzahl, $hinweise);
+}
+
+/**
+ * O4: Themen, die aus zwei oder mehr Namen entstehen.
+ * Rueckgabe: array(Thema => array(Name, Name, ...)), nur die mehrfachen.
+ */
+function ws_themen_doppelt(array $cfg)
+{
+    $wo = array();
+    foreach ($cfg as $k => $v) {
+        if (preg_match('/^USER[0-9]+[.]NAME$/', (string) $k) !== 1 || !is_scalar($v)) { continue; }
+        $t = ws_topic_name((string) $v);
+        if ($t === '') { continue; }
+        $wo[$t][] = (string) $v;
+    }
+    $doppelt = array();
+    foreach ($wo as $t => $namen) {
+        if (count($namen) > 1) { $doppelt[$t] = $namen; }
+    }
+    return $doppelt;
+}
+
+/**
+ * X-3 (Bauliste O7): welche Werte der geltenden Konfiguration bestuenden die
+ * Pruefung beim Zurueckspielen NICHT? Nur die Schluesselnamen, nie die Werte.
+ * "Einstellungen sichern" traegt sie als _warnung in die Datei, und der
+ * Reiter zeigt sie gelb am Knopf.
+ */
+function ws_sicherung_warnungen(?array $cfg = null)
+{
+    if ($cfg === null) { $cfg = ws_config_read(false); }
+    $schlecht = array();
+    foreach ($cfg as $k => $v) {
+        $k = (string) $k;
+        $bekannt = array_key_exists($k, ws_vorgaben()) || preg_match('/^USER[0-9]+[.](NAME|MACS)$/', $k) === 1;
+        if (!$bekannt || ($k === 'BASE.TOKEN' && trim((string) $v) === '')) { continue; }
+        if (ws_wert_pruefen($k, $v) !== '') { $schlecht[] = $k; }
+    }
+    foreach (ws_themen_doppelt($cfg) as $namen) {
+        $schlecht[] = 'USER*.NAME (' . implode(', ', $namen) . ')';
+    }
+    return $schlecht;
+}
+
+/**
+ * Den Abraeumer bin/mqtt_abraeumen.pl aufrufen (M2, I6; Durchgang 02.10.2026).
+ * $art: --strich, --strich-wenn-da oder --leeren-alle. Rueckgabe:
+ * array(Rueckgabewert, Ausgabezeilen) - 0 heisst "beim Broker bestaetigt".
+ * Jedes Thema geht einzeln maskiert hinaus; der Abraeumer nimmt nur Themen
+ * unter wifi_ng/ an.
+ */
+function ws_mqtt_aufraeumen($art, array $themen = array())
+{
+    $p = ws_paths();
+    $helfer = $p['bindir'] . '/mqtt_abraeumen.pl';
+    if (!in_array($art, array('--strich', '--strich-wenn-da', '--leeren-alle'), true)) {
+        return array(3, array('unbekannte Art'));
+    }
+    if (!is_file($helfer)) {
+        return array(9, array('fehlt: ' . $helfer));
+    }
+    $teile = array(is_executable('/usr/bin/timeout') ? '/usr/bin/timeout 60 perl' : 'perl',
+                   escapeshellarg($helfer), escapeshellarg($art));
+    foreach ($themen as $t) {
+        $teile[] = escapeshellarg((string) $t);
+    }
+    $aus = array();
+    $rc = 9;
+    @exec(implode(' ', $teile) . ' 2>&1', $aus, $rc);
+    return array((int) $rc, $aus);
+}
+
+/* ---- C6 (Durchgang 02.10.2026): derselbe Befehl binnen 60 s ----
+ * Der Endpunkt merkt sich den zuletzt ausgefuehrten schreibenden Befehl
+ * (Art, Wert, Zeit) unter data/plugins/<ordner>/befehl_zuletzt.json. Nur ein
+ * Aufruf mit gueltigem Merkwort schreibt diese Datei. */
+function ws_befehl_datei()
+{
+    $p = ws_paths();
+    return $p['datadir'] . '/befehl_zuletzt.json';
+}
+
+function ws_befehl_binnen($aktion, $wert, $sekunden = 60)
+{
+    $j = @json_decode((string) @file_get_contents(ws_befehl_datei()), true);
+    if (!is_array($j) || !isset($j['aktion'], $j['wert'], $j['ts'])) {
+        return false;
+    }
+    $alter = time() - (int) $j['ts'];
+    return (string) $j['aktion'] === (string) $aktion && (string) $j['wert'] === (string) $wert
+        && $alter >= 0 && $alter < $sekunden;
+}
+
+function ws_befehl_merken($aktion, $wert)
+{
+    $f = ws_befehl_datei();
+    @mkdir(dirname($f), 0775, true);
+    $tmp = $f . '.tmp.' . getmypid();
+    $js = json_encode(array('aktion' => (string) $aktion, 'wert' => (string) $wert, 'ts' => time()));
+    if ($js !== false && @file_put_contents($tmp, $js) === strlen($js)) {
+        if (!@rename($tmp, $f)) { @unlink($tmp); }
+    } else {
+        @unlink($tmp);
+    }
 }
 
 /**
@@ -1453,6 +1676,12 @@ function ws_sicherung_inhalt()
                     . 'Merkwort der Anlage: wie ein Passwort behandeln.',
         '_stand'   => date('Y-m-d H:i:s'),
     );
+    /* X-3 (Bauliste O7): Werte, die das Zurueckspielen abwiese, werden genannt
+     * (nur Namen, nie Werte). Die Datei bleibt vollstaendig. */
+    $warn = ws_sicherung_warnungen($cfg);
+    if ($warn) {
+        $kopf['_warnung'] = 'Diese Werte wuerde das Zurueckspielen abweisen: ' . implode(', ', $warn);
+    }
     return array($kopf, $aus);
 }
 
@@ -1475,19 +1704,38 @@ function ws_vorlage()
     foreach (ws_users($cfg) as $u) {
         if ($u['name'] === '') { continue; }
         $o .= ws_vorlage_zeile('wifi_ng_' . ws_topic_name($u['name']),
-              'Anwesenheit ' . $u['name'] . ' (1 = da)', 0, 1);
+              ws_kurz(sprintf(ws_t('VORLAGE.K_PERSON'), $u['name'])), 0, 1);
     }
     /* Die Zustandsthemen. MinVal traegt hier ausdruecklich die Fehlwerte:
      * status_ok meldet -1 fuer "noch nie gelaufen", und mit MinVal="0"
-     * zeigte Loxone dafuer eine 0 - also "Stoerung", was etwas anderes ist. */
-    $o .= ws_vorlage_zeile('wifi_ng_status_mode',     'Abfrage-Modus: 0 = beides, 1 = nur Fritz!Box, 2 = nur Scan', 0, 2);
-    $o .= ws_vorlage_zeile('wifi_ng_status_interval', 'Scan-Intervall in Minuten', 0, 60);
-    $o .= ws_vorlage_zeile('wifi_ng_status_enabled',  'Periodischer Scan: 1 = ein', 0, 1);
-    $o .= ws_vorlage_zeile('wifi_ng_status_ok',       'Letzter Lauf: 1 = gemessen, 0 = Stoerung, -1 = noch keiner', -1, 1);
-    $o .= ws_vorlage_zeile('wifi_ng_status_ts',       'Zeitstempel des letzten Laufs (Unix-Sekunden)', 0, 2147483647);
-    $o .= ws_vorlage_zeile('wifi_ng_status_listener', 'MQTT-Listener: 1 = verbunden, 0 = weg', 0, 1);
+     * zeigte Loxone dafuer eine 0 - also "Stoerung", was etwas anderes ist.
+     *
+     * O11 (Durchgang 02.10.2026): die Kommentare kommen aus der Sprachdatei
+     * und sind hoechstens 40 Zeichen lang (Regeln/07); bis 3.2.9 standen drei
+     * mit 45 bis 58 Zeichen fest auf Deutsch hier. status/zaehler hat einen
+     * Eingang bekommen. C8: der Modus kennt -1 fuer "keine Suche". */
+    $o .= ws_vorlage_zeile('wifi_ng_status_mode',     ws_kurz(ws_t('VORLAGE.K_MODE')), -1, 2);
+    $o .= ws_vorlage_zeile('wifi_ng_status_interval', ws_kurz(ws_t('VORLAGE.K_INTERVAL')), 0, 60);
+    $o .= ws_vorlage_zeile('wifi_ng_status_enabled',  ws_kurz(ws_t('VORLAGE.K_ENABLED')), 0, 1);
+    $o .= ws_vorlage_zeile('wifi_ng_status_ok',       ws_kurz(ws_t('VORLAGE.K_OK')), -1, 1);
+    $o .= ws_vorlage_zeile('wifi_ng_status_ts',       ws_kurz(ws_t('VORLAGE.K_TS')), 0, 2147483647);
+    $o .= ws_vorlage_zeile('wifi_ng_status_zaehler',  ws_kurz(ws_t('VORLAGE.K_ZAEHLER')), 0, 999);
+    $o .= ws_vorlage_zeile('wifi_ng_status_listener', ws_kurz(ws_t('VORLAGE.K_LISTENER')), 0, 1);
     $o .= '</VirtualInHttp>' . $crlf;
     return array('VI_wifiscanner.xml', $o);
+}
+
+/** O11: ein Kommentar der Vorlage hat hoechstens 40 Zeichen (Regeln/07). Ein
+ *  laengerer - etwa mit einem langen Personennamen - wird gekuerzt und endet
+ *  dann auf "…". */
+function ws_kurz($s, $max = 40)
+{
+    $s = (string) $s;
+    if (preg_match_all('/./us', $s) <= $max) {
+        return $s;
+    }
+    preg_match('/^.{0,' . ($max - 1) . '}/us', $s, $m);
+    return (isset($m[0]) ? $m[0] : '') . '…';
 }
 
 /** Eine Befehlszeile der Vorlage. Entsteht an EINER Stelle. */

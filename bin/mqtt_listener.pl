@@ -40,6 +40,7 @@ use LoxBerry::Log;
 use LoxBerry::IO;
 use Net::MQTT::Simple;
 use Config::Simple;
+use Fcntl qw(:flock);
 
 # Name used for the cron symlinks - er muss mit ws_cron_apply() in
 # webfrontend/html/ws_lib.php uebereinstimmen. (Bis 3.1.11 verwies dieser
@@ -51,6 +52,27 @@ my $cfgfile = "$lbpconfigdir/wifi_scanner.cfg";
 
 my $log = LoxBerry::Log->new(name => 'mqtt_listener', addtime => 1);
 LOGSTART "WifiScanner MQTT listener starting";
+
+# I4 (Durchgang 02.10.2026): Einzelinstanz-Sperre. daemon/daemon (Systemstart)
+# und der Waechter in check.pl fragten bis 3.2.9 beide erst /proc und starteten
+# dann - fielen sie zusammen, liefen zwei Listener, und jeder Befehl wirkte
+# doppelt (Installer-Pruefer, Fall D1: 10 von 10 Runden). Ein zweites Exemplar
+# endet jetzt hier still. Die Sperre liegt NEBEN dem Datenordner, den
+# purge_installation loescht. Perl setzt FD_CLOEXEC: check.pl, das dieser
+# Listener anstoesst, erbt sie nicht (Regeln: "Sperre vererbt sich an Kinder").
+my $sperre;
+my $sperrdatei = "$lbpdatadir.listener.lock";
+if (!open($sperre, '>>', $sperrdatei)) {
+    LOGWARN "Sperrdatei $sperrdatei nicht anlegbar - es wird ohne Einzelinstanz-Sperre gearbeitet.";
+} elsif (!flock($sperre, LOCK_EX | LOCK_NB)) {
+    LOGINF "Ein anderer MQTT-Listener dieses Plugins laeuft bereits - dieser beendet sich.";
+    LOGEND "Beendet (zweites Exemplar).";
+    exit 0;
+}
+
+# C6: der zuletzt angenommene Befehl je Art (Wert, Zeit) - fuer "gleicher Wert
+# binnen 60 s" (Entscheidung 19, X-7).
+my %zuletzt = ();
 
 # Allow unencrypted connection with credentials
 $ENV{MQTT_SIMPLE_ALLOW_INSECURE_LOGIN} = 1;
@@ -69,14 +91,91 @@ if ($mqttcred->{brokeruser} and $mqttcred->{brokerpass}) {
 
 LOGINF "Connected to MQTT broker $mqttcred->{brokeraddress}, subscribing wifi_ng/cmd/#";
 
+##########################################################################
+# Abonnieren und warten - mit erneuertem Abonnement nach jedem Wiederverbinden
+#
+# C10 (Durchgang 02.10.2026): bis 3.2.9 stand hier $mqtt->run(...). Net::MQTT::
+# Simple 1.32-3LB, wie LoxBerry es mitliefert, verbindet nach einem Abriss
+# selbst neu, abonniert aber nicht neu (am Gateway gemessen 16./17.09.2026,
+# LoxBerry #1571; Pruefer mqtt Nr. 6, Fall E0). Der Listener lief danach taub
+# weiter, und status/listener meldete 1.
+#
+# Jetzt eine eigene Schleife: aendert sich die Verbindung (neues Socket-Objekt
+# oder neuer Zeitpunkt last_connect), wird das Abonnement erneuert -
+# unabhaengig davon, ob die Bibliothek es selbst schon tut (dann kommt es
+# doppelt an, was nichts schadet). Der Zustand geht alle 30 s nach
+# data/plugins/<ordner>/listener.json; check.pl meldet status/listener=1 nur,
+# wenn er frisch ist und "verbunden" und "abonniert" sagt.
+##########################################################################
+
+my %abos = ("wifi_ng/cmd/#" => \&handle_command);
+my $abonniert_seit = 0;
+my $herz_zuletzt = '';
+$mqtt->subscribe(%abos);
+$abonniert_seit = time() if ($mqtt->{socket});
+my $gesehen = verbindungskennung();
 publish_status();
+herz();
+my $herz_zeit = time();
 
-$mqtt->run(
-    "wifi_ng/cmd/#" => \&handle_command,
-);
+while (1) {
+    eval { $mqtt->tick(1); 1 } or LOGWARN "tick: $@";
+    my $kennung = verbindungskennung();
+    if ($mqtt->{socket} && $kennung ne $gesehen) {
+        LOGWARN "Die Verbindung zum Broker wurde neu aufgebaut - das Abonnement wifi_ng/cmd/# wird erneuert.";
+        $mqtt->subscribe(%abos);
+        $abonniert_seit = time();
+        $gesehen = verbindungskennung();
+        publish_status();
+        herz();
+        $herz_zeit = time();
+    }
+    if (!$mqtt->{socket}) {
+        $abonniert_seit = 0;
+        select(undef, undef, undef, 0.5);
+    }
+    # Ein Wechsel (getrennt/verbunden) geht sofort hinaus, nicht erst nach 30 s.
+    if (herz_stand() ne $herz_zuletzt) {
+        herz();
+        $herz_zeit = time();
+    }
+    if (time() - $herz_zeit >= 30) {
+        herz();
+        $herz_zeit = time();
+    }
+}
 
-LOGEND "WifiScanner MQTT listener stopped";
-exit 0;
+# Woran eine neue Verbindung zu erkennen ist: ein neues Socket-Objekt oder ein
+# neuer Zeitpunkt der letzten Verbindung (beides Felder von Net::MQTT::Simple).
+sub verbindungskennung
+{
+    my $s = $mqtt->{socket};
+    return ($s ? "$s" : '') . '|' . (defined $mqtt->{last_connect} ? $mqtt->{last_connect} : '');
+}
+
+# Der Zustand, den herz() ablegt: verbunden/abonniert.
+sub herz_stand
+{
+    return ($mqtt->{socket} ? 1 : 0) . '/' . ($abonniert_seit ? 1 : 0);
+}
+
+# Den eigenen Zustand ablegen (C10). Unteilbar: daneben schreiben, umbenennen.
+sub herz
+{
+    mkdir($lbpdatadir) if (!-d $lbpdatadir);
+    $herz_zuletzt = herz_stand();
+    my $verbunden = $mqtt->{socket} ? 1 : 0;
+    my $inhalt = sprintf('{"pid":%d,"verbunden":%d,"abonniert":%d,"seit":%d,"ts":%d}' . "\n",
+                         $$, $verbunden, ($verbunden && $abonniert_seit) ? 1 : 0,
+                         $abonniert_seit, time());
+    my $ziel = "$lbpdatadir/listener.json";
+    my $tmp = "$ziel.tmp.$$";
+    if (open(my $fh, '>', $tmp)) {
+        print $fh $inhalt;
+        close($fh);
+        rename($tmp, $ziel) or unlink($tmp);
+    }
+}
 
 ##########################################################################
 # Command handling
@@ -84,16 +183,33 @@ exit 0;
 
 sub handle_command
 {
-    my ($topic, $payload) = @_;
+    my ($topic, $payload, $retain) = @_;
     $payload = "" if (!defined $payload);
     $payload =~ s/^\s+|\s+$//g;
 
     my ($cmd) = $topic =~ m{^wifi_ng/cmd/(.+)$};
     return if (!$cmd);
 
+    # C11 (Durchgang 02.10.2026): ein zurueckbehaltener Befehl wird nicht
+    # ausgefuehrt. Bis 3.2.9 lief ein einmal retained gesendetes
+    # "cmd/enable 0" bei JEDEM Start des Listeners erneut - und der startet bei
+    # jedem Speichern und jedem Endpunkt-Befehl neu (Pruefer mqtt Nr. 9, Fall D).
+    if ($retain) {
+        LOGWARN "Zurueckbehaltener Befehl auf $topic ('$payload') verworfen - Befehle aus Loxone "
+              . "nicht retained senden. Entfernen laesst er sich mit einer leeren Nachricht mit Retain.";
+        return;
+    }
+
     LOGINF "Received command '$cmd' with payload '$payload'";
 
     if ($cmd eq "scan") {
+        # C9: ein ungueltiger Modus wird abgewiesen, es gibt keinen Lauf. Bis
+        # 3.2.9 lief dann ein Suchlauf im eingestellten Modus (Pruefer code
+        # Nr. 10) - stilles Zurechtbiegen nach Entscheidung 19.
+        if ($payload ne "" && !defined((parse_mode($payload))[0])) {
+            LOGERR "Unknown scan mode '$payload' - kein Suchlauf. Erlaubt: leer, 0/both, 1/fritzbox, 2/ping";
+            return;
+        }
         trigger_scan($payload);
     }
     elsif ($cmd eq "mode") {
@@ -101,9 +217,26 @@ sub handle_command
         if (defined $fritz) {
             my $cfg = cfg_lesen();
             return if (!$cfg);
+            my $wert = "$fritz$active";
+            # C6 (Durchgang 02.10.2026, Entscheidung 19): ein unveraenderter Modus
+            # schreibt nichts und stoesst keinen Suchlauf an. Bis 3.2.9 loeste
+            # jedes cmd/mode einen vollen Lauf aus (sudo arping, bis 20 Pakete je
+            # Geraet) - bei zyklischem Senden aus Loxone jedes Mal.
+            if (skalar($cfg->param("BASE.FRITZBOX_ENABLE")) eq "$fritz"
+                && skalar($cfg->param("BASE.ACTIVE_SCAN")) eq "$active") {
+                if (gleich_binnen('mode', $wert)) {
+                    LOGINF "Mode unchanged, derselbe Befehl binnen 60 s - nichts geschieht.";
+                    return;
+                }
+                merken('mode', $wert);
+                LOGINF "Mode unchanged (FRITZBOX_ENABLE=$fritz ACTIVE_SCAN=$active) - nichts geschrieben, kein Suchlauf.";
+                publish_status();
+                return;
+            }
             $cfg->param("BASE.FRITZBOX_ENABLE", $fritz);
             $cfg->param("BASE.ACTIVE_SCAN", $active);
             cfg_speichern($cfg) or return;
+            merken('mode', $wert);
             LOGOK "Mode set: FRITZBOX_ENABLE=$fritz ACTIVE_SCAN=$active";
             publish_status();
             trigger_scan("");
@@ -115,9 +248,21 @@ sub handle_command
         if ($payload =~ /^(1|3|5|10|15|30|60)$/) {
             my $cfg = cfg_lesen();
             return if (!$cfg);
+            if (skalar($cfg->param("BASE.CRON")) eq $payload) {
+                if (gleich_binnen('interval', $payload)) {
+                    LOGINF "Scan interval unchanged, derselbe Befehl binnen 60 s - nichts geschieht.";
+                    return;
+                }
+                merken('interval', $payload);
+                update_cron(skalar($cfg->param("BASE.ENABLED")), $payload);
+                LOGINF "Scan interval unchanged ($payload) - nichts geschrieben, Zeitplan nachgezogen.";
+                publish_status();
+                return;
+            }
             $cfg->param("BASE.CRON", $payload);
             cfg_speichern($cfg) or return;
             update_cron($cfg->param("BASE.ENABLED"), $payload);
+            merken('interval', $payload);
             LOGOK "Scan interval set to $payload minute(s)";
             publish_status();
         } else {
@@ -128,9 +273,21 @@ sub handle_command
         if ($payload =~ /^(0|1)$/) {
             my $cfg = cfg_lesen();
             return if (!$cfg);
+            if (skalar($cfg->param("BASE.ENABLED")) eq $payload) {
+                if (gleich_binnen('enable', $payload)) {
+                    LOGINF "Periodic scanning unchanged, derselbe Befehl binnen 60 s - nichts geschieht.";
+                    return;
+                }
+                merken('enable', $payload);
+                update_cron($payload, skalar($cfg->param("BASE.CRON")));
+                LOGINF "Periodic scanning unchanged ($payload) - nichts geschrieben, Zeitplan nachgezogen.";
+                publish_status();
+                return;
+            }
             $cfg->param("BASE.ENABLED", $payload);
             cfg_speichern($cfg) or return;
             update_cron($payload, $cfg->param("BASE.CRON"));
+            merken('enable', $payload);
             LOGOK "Periodic scanning " . ($payload ? "enabled" : "disabled");
             publish_status();
         } else {
@@ -140,6 +297,28 @@ sub handle_command
     else {
         LOGERR "Unknown command '$cmd'";
     }
+}
+
+# C6: derselbe Befehl mit demselben Wert binnen 60 s? (Entscheidung 19, X-7)
+sub gleich_binnen
+{
+    my ($art, $wert) = @_;
+    my $z = $zuletzt{$art};
+    return (ref($z) eq 'ARRAY' && $z->[0] eq $wert && time() - $z->[1] < 60) ? 1 : 0;
+}
+
+sub merken
+{
+    my ($art, $wert) = @_;
+    $zuletzt{$art} = [$wert, time()];
+}
+
+# Config::Simple liefert bei einem Komma ein Feld - fuer den Vergleich ein Skalar.
+sub skalar
+{
+    my ($v) = @_;
+    $v = join(',', @{$v}) if (ref($v) eq 'ARRAY');
+    return defined $v ? "$v" : '';
 }
 
 # Returns (FRITZBOX_ENABLE, ACTIVE_SCAN) or (undef, undef)
@@ -208,18 +387,20 @@ sub cfg_speichern
 sub trigger_scan
 {
     my ($mode) = @_;
-    my @arg = ();
+    # C13 (Durchgang 02.10.2026): ein Befehl ist ein Auftrag - check.pl sucht
+    # dann auch bei ausgeschaltetem regelmaessigem Suchen.
+    my @arg = ('--auftrag');
     if (defined $mode && $mode ne "") {
         my ($fritz, $active) = parse_mode($mode);
         if (defined $fritz) {
             # $mode hat das verankerte Muster bestanden - trotzdem als
             # eigenes Argument, nicht in eine Befehlszeile eingesetzt.
-            @arg = ('--mode', $mode);
+            push(@arg, '--mode', $mode);
         } else {
             LOGERR "Ignoring unknown scan mode override '$mode'";
         }
     }
-    LOGINF "Triggering scan " . (@arg ? join(' ', @arg) : '(ohne Modus)');
+    LOGINF "Triggering scan " . join(' ', @arg);
     # Ohne diese Zeile bleibt nach jedem angestossenen Scan ein Zombie in der
     # Prozessliste stehen: der Vater ruft weder waitpid auf noch ignoriert er
     # das Kindsignal. Bei einem Dauerlaeufer, den man ueber MQTT beliebig oft
@@ -297,7 +478,10 @@ sub publish_status
     my $mode;
     if ($fritz and $active)  { $mode = 0; }
     elsif ($fritz)           { $mode = 1; }
-    else                     { $mode = 2; }
+    elsif ($active)          { $mode = 2; }
+    # C8 (Durchgang 02.10.2026): beide Wege aus heisst "keine Suche" (-1), nicht
+    # "nur Scan". Bis 3.2.9 stand dann retained eine 2 da (Pruefer code Nr. 9).
+    else                     { $mode = -1; }
 
     # Zustaende - sie gehoeren retained, damit Loxone nach einem Neustart
     # des Miniservers oder des Gateways sofort den Stand hat.

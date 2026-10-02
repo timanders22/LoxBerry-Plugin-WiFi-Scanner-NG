@@ -32,19 +32,41 @@ lb_wurzel_suchen() {
 # Daemon script - executed as root at LoxBerry boot.
 # Starts the MQTT command listener as user loxberry.
 #
-# We add 3 arguments when executing the script:
-# command <NAME> <FOLDER> <VERSION>
-
-ARGV2=$2 # Plugin name
-ARGV3=$3 # Plugin installation folder
+# I8 (Durchgang 02.10.2026): der Ordner kommt NICHT mehr aus $3. Bis 3.2.9
+# stand hier PLUGINFOLDER=${3:-wifi_ng}; so aufgerufen, wie dieser Kopf es
+# beschrieb ("<NAME> <FOLDER> <VERSION>"), ist $3 die Fassung - es kam
+# "bin/plugins/3.2.9/mqtt_listener.pl not found", und kein Listener startete
+# (Installer-Pruefer, "nicht pruefbar"). Wie LoxBerry dieses Skript beim
+# Systemstart aufruft, ist nicht gemessen; deshalb geht es jetzt in beiden
+# Formen und ohne Argumente:
+#   1. Den Platzhalter in der Zeile unten ersetzt der Installer beim Einbau
+#      durch den Ordnernamen (replaceenv in plugininstall.pl, wie in den
+#      anderen Linien des Hauses).
+#   2. Steht er unersetzt da (Aufruf aus dem ausgepackten Archiv), gilt der
+#      eigene Dateiname - der Installer legt dieses Skript als
+#      system/daemons/plugins/<name> ab, und Name und Ordner stimmen ueberein.
+#   3. Sonst wifi_ng.
+WS_ORDNER="REPLACELBPPLUGINDIR"
+case "$WS_ORDNER" in
+    REPLACE*|*/*|.*) WS_ORDNER="" ;;
+esac
+if [ -z "$WS_ORDNER" ]; then
+    WS_ORDNER=$(basename "$0")
+    case "$WS_ORDNER" in
+        ""|daemon|*/*|.*) WS_ORDNER="wifi_ng" ;;
+    esac
+fi
 
 LBHOMEDIR=${LBHOMEDIR:-$(lb_wurzel_suchen)}
-PLUGINFOLDER=${ARGV3:-wifi_ng}
+PLUGINFOLDER=$WS_ORDNER
 LISTENER=$LBHOMEDIR/bin/plugins/$PLUGINFOLDER/mqtt_listener.pl
 # Die Marke liegt NEBEN dem Datenordner: purge_installation loescht
 # data/plugins/<ordner>/ samt Inhalt (Regeln/06), der Nachbar mit dem Punkt
 # im Namen bleibt liegen.
 MARKE=$LBHOMEDIR/data/plugins/$PLUGINFOLDER.upgrade_laeuft
+# I4: die gemeinsame Startsperre mit dem Waechter in check.pl, ebenfalls
+# neben dem Datenordner.
+SPERRE=$LBHOMEDIR/data/plugins/$PLUGINFOLDER.listener_start.lock
 
 # ---------------------------------------------------------------------------
 # Gehoert diese Prozessnummer unserem Listener?
@@ -149,7 +171,15 @@ if [ -f "$LISTENER" ]; then
         # Befehl gar nicht aus - lautlos, denn die Ausgabe geht nach
         # /dev/null. Und "perl" davor, damit ein verlorenes
         # Ausfuehrungsrecht den Start nicht stillschweigend verhindert.
-        su loxberry -s /bin/bash -c "perl '$LISTENER' > /dev/null 2>&1 &"
+        #
+        # I4 (Durchgang 02.10.2026): unter der gemeinsamen Startsperre mit dem
+        # Waechter in check.pl. Bis 3.2.9 starteten beide ohne Sperre, und beim
+        # Systemstart mit nachgeholtem Cron-Takt liefen in 10 von 10 Runden zwei
+        # Listener (Installer-Pruefer, Fall D1). Die Sperre haelt eine Sekunde
+        # ueber den Start hinaus, damit der Waechter den neuen Listener in /proc
+        # sieht; der Listener selbst erbt sie nicht (9>&-) und hat zusaetzlich
+        # seine Einzelinstanz-Sperre. Fehlt flock, wird ohne gestartet.
+        su loxberry -s /bin/bash -c "exec 9>>'$SPERRE'; if ! command -v flock >/dev/null 2>&1 || flock -n 9; then perl '$LISTENER' 9>&- > /dev/null 2>&1 & sleep 1; fi"
     fi
 else
     echo "<WARNING> $LISTENER not found"

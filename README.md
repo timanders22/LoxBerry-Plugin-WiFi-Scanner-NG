@@ -61,8 +61,11 @@ dort fehlt, wird angepingt.
 Zum Anpingen benutzt das Plugin `arping`, `arp` und `arp-scan` — für die
 ersten beiden braucht es `sudo`, die Regeln dafür liefert das Plugin mit.
 Seit 2.5.2 werden die Programme der Reihe nach in `/usr/sbin`, `/sbin`,
-`/usr/bin` und `/bin` gesucht; liegt eines nicht dort, wo die `sudoers`-Regel
-es erwartet, legt `postinstall.sh` einen Verweis in `/usr/sbin` an.
+`/usr/bin` und `/bin` gesucht. Die `sudoers`-Regel nennt nur `/usr/sbin`;
+liegt ein Programm anderswo, weist `sudo` den Aufruf ab. Wo die Programme
+liegen und ob die Regel passt, zeigt der Reiter *Test*. (Einen Verweis in
+`/usr/sbin` legt das Plugin nicht mehr an: `postinstall.sh` läuft als
+`loxberry` und konnte das nie.)
 
 ## Personen und Geräte
 
@@ -71,8 +74,25 @@ Je Person eine Zeile. Dazu gehören die **MAC-Adressen** (Form
 getrennt durch Semikolon, Komma oder Leerzeichen. Sobald eines der Geräte
 erreichbar ist, gilt die Person als anwesend.
 
-Der Name wird zum MQTT-Thema — Umlaute und Leerzeichen werden dabei ersetzt.
-Zeilen ohne Namen oder ohne Adresse werden beim Speichern verworfen.
+Der Name wird zum MQTT-Thema — Umlaute werden ersetzt (`ä` → `ae`),
+Leerzeichen und andere Zeichen werden zu `_`. Eine Zeile ohne Namen, ohne
+Adresse oder mit einer ungültigen Adresse (auch einer MAC-Adresse mit
+Bindestrichen) wird beim Speichern beanstandet; gespeichert wird dann gar
+nichts, und die Eingaben stehen markiert wieder im Formular. Ebenso, wenn
+aus zwei Namen dasselbe Thema entstünde oder der Name Anführungszeichen trägt.
+
+**Umstieg für Namen mit Umlaut oder ß.** Bisher ging die Anwesenheit einer
+Person wie „Jürgen“ unter `wifi_ng/J_rgen` hinaus, während Oberfläche,
+Themenliste und Loxone-Vorlage `wifi_ng/Juergen` nannten. Jetzt sendet das
+Plugin unter dem Namen, den die Oberfläche zeigt (`wifi_ng/Juergen`). Das
+alte Thema bekommt einmal `-` (keine Aussage) und bleibt so stehen. Wer in
+Loxone einen Eingang auf das alte Thema gelegt hat, stellt ihn auf den
+Namen aus dem Reiter *Einbindung in Loxone* um. Namen ohne Umlaut, ß oder
+andere Sonderzeichen sind nicht betroffen.
+
+Eine ausgetragene oder umbenannte Person bekommt beim Speichern und beim
+Zurückspielen einer Sicherung einmal `-`
+unter ihrem bisherigen Thema, damit ihr letzter Wert nicht stehen bleibt.
 
 ## Weg zum Miniserver
 
@@ -80,8 +100,15 @@ Zeilen ohne Namen oder ohne Adresse werden beim Speichern verworfen.
 nach einem Neustart des Miniservers steht der letzte Stand sofort wieder da:
 
 ```
-wifi_ng/<Person>        1 = anwesend, 0 = abwesend
+wifi_ng/<Person>        1 = anwesend, 0 = abwesend, - = ausgetragen
 ```
+
+Fällt die Suche aus — Fritz!Box nicht erreichbar oder antwortet unbrauchbar,
+Anmeldung abgewiesen, beide Wege ausgeschaltet —, gehen die Personen in
+diesem Lauf gar nicht hinaus: es bleibt der letzte Messwert stehen, und
+`wifi_ng/status/ok` steht mit dem Grund auf 0. In Loxone gilt die
+Anwesenheit deshalb nur zusammen mit `ok`. Ein ausgefallener Lauf ist kein
+„alle weg“.
 
 **UDP** gibt es zusätzlich, für Aufbauten ohne MQTT-Gateway. Gesendet wird
 `<Name>:<0|1>` an den in den Einstellungen gewählten Port (Vorgabe 7007).
@@ -98,14 +125,19 @@ Der Listener hört auf `wifi_ng/cmd/#`:
 | `wifi_ng/cmd/enable` | `0` / `1` | Regelmäßiges Suchen an oder aus |
 
 Der aktuelle Stand wird retained nach `wifi_ng/status/#` veröffentlicht
-(`mode`, `interval`, `enabled`).
+(`mode`, `interval`, `enabled`); `mode` ist `-1`, wenn beide Suchwege aus
+sind. Befehle bitte **nicht retained** senden — ein zurückbehaltener Befehl
+wird verworfen. Derselbe Wert binnen 60 Sekunden ändert nichts; ein
+unveränderter Modus stößt keinen Suchlauf an.
 
 ## Zeitplan
 
 Kurze Abstände erkennen schneller, erzeugen aber mehr Netzverkehr. Drei bis
 fünf Minuten sind ein guter Mittelweg. Ist das regelmäßige Suchen aus, scannt
-das Plugin nur noch auf Befehl — aus Loxone per MQTT oder von Hand im Reiter
-*Test*.
+das Plugin nur noch auf Befehl — aus Loxone per MQTT oder über den Endpunkt,
+oder von Hand im Reiter *Test*; ein Lauf aus dem Zeitplan sucht dann nicht.
+`OK` am Endpunkt geht auf 0, sobald der letzte Lauf älter ist als das
+Dreifache des Takts.
 
 ## Konfiguration
 
@@ -123,8 +155,52 @@ das Plugin nur noch auf Befehl — aus Loxone per MQTT oder von Hand im Reiter
 | `USERS` | Anzahl der Personen; je Person ein Abschnitt `[USERn]` |
 
 Beim Speichern legt das Plugin eine Kopie neben dem Konfigordner ab
-(`config/plugins/<ordner>.wifi_scanner.backup`), damit die Einstellungen eine
-Neuinstallation überstehen. Das Deinstallieren entfernt sie seit 2.5.2 wieder.
+(`config/plugins/<ordner>.wifi_scanner.backup`). Sie dient der Selbstheilung,
+wenn die Konfiguration fehlt, und der Rettung bei einer **Aktualisierung**.
+Eine **Neuinstallation** übernimmt sie nicht: liegt sie — oder eine andere
+Zweitschrift — noch von einer früheren Installation da, legt `preinstall.sh`
+sie nach `<name>.alt` und meldet das mit einer Warnung; die Deinstallation
+räumt sie ab. Wer Einstellungen über eine Neuinstallation retten will, nimmt
+„Einstellungen sichern“ und „Zurückspielen“.
+
+Die Deinstallation leert außerdem die zurückbehaltenen Themen unter
+`wifi_ng/` beim Broker und entfernt den Zeitplan-Verweis `wifi_scanner`.
+
+**Grenze: eine zweite Installation.** Installiert man das Plugin ein zweites
+Mal (LoxBerry nennt den Ordner dann `wifi_ng01`), bekommt die zweite eigene
+Einstellungen, aber dieselben MQTT-Themen: beide senden unter `wifi_ng/`,
+beide hören auf `wifi_ng/cmd/#`, und die Deinstallation der einen leert die
+zurückbehaltenen Themen beider. Zwei Installationen nebeneinander sind
+deshalb nicht vorgesehen.
+
+## Version 3.2.9
+
+Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/WiFi-Scanner_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 4, 5, 8, 16, 19, 26).
+Gemessen mit Attrappen für Fritz!Box, Perl-Module, sudo, Broker und Gateway unter PHP 7.4, 8.3 und 8.5 sowie im Installer-Prüfstand; nicht am Gerät, nicht an einer echten Fritz!Box.
+
+* **Ausfall ist nicht „abwesend“:**
+  * Ist die Fritz!Box gestört (nicht erreichbar, 401, HTTP 500, SOAP-Fehler, HTML statt XML), geht keine Person mehr auf 0. Bisher meldete das Plugin dann alle als abwesend, teils sogar mit `ok=1`.
+  * Das Abbild behält den letzten Stand, und `ok=0` nennt den wahren Grund.
+* **Umlaute im Namen:** Gesendet wird jetzt das Thema, das Oberfläche und Vorlage nennen, also `wifi_ng/Juergen` statt `wifi_ng/J_rgen`. Das alte Thema bekommt einmal `-`. **In Loxone:** Eingänge von Personen mit Umlaut auf den neuen Namen umstellen.
+* **Takt:** Bisher setzte jedes unveränderte Speichern im Browser den Takt still auf 1 Minute. Bitte nach dem Update den Takt im Reiter Einstellungen prüfen.
+* **Personen und MQTT:**
+  * Eine ausgetragene oder umbenannte Person bekommt einmal `-`, auch beim Zurückspielen einer Sicherung.
+  * Retained Befehle werden beim Start des Listeners nicht mehr ausgeführt.
+  * Nach einem Broker-Abriss abonniert der Listener neu, und es läuft nur ein Listener.
+* **Endpunkt und Befehle:**
+  * `OK=0` ab dem Dreifachen des Takts; `ZAEHLER` stimmt.
+  * Gleicher Modus oder Takt binnen 60 s ergibt `UNVERAENDERT=1`.
+  * `status/mode` meldet `-1`, wenn keine Suche eingeschaltet ist.
+* **Speichern:**
+  * PRG; bei einer Beanstandung wird nichts gespeichert, die Eingaben kommen markiert zurück.
+  * Eine MAC mit Bindestrichen wird abgewiesen, ebenso Anführungszeichen in Namen und im Fritz!Box-Kennwort.
+  * Doppelte oder leere Themennamen werden beanstandet.
+  * `?config` zeigt beim Kennwort nur „gesetzt (n Zeichen)“.
+* **Installer:**
+  * Eine Neuinstallation spielt keine Reste ein (`.alt` und Warnung).
+  * Ein Update auf voller Karte kürzt die Konfiguration nicht mehr auf 0 Byte.
+  * Die Deinstallation räumt die retained Themen und den Zeitplan-Verweis ab.
+  * Kein wirkungsloser Verweis in `/usr/sbin` mehr; der Reiter Test zeigt, wo `arping`, `arp` und `arp-scan` liegen.
 
 ## Version 3.2.8 — Sicherungen, die einen Abbruch überstehen
 

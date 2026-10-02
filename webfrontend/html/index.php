@@ -155,7 +155,9 @@ if ($ws_aktion !== '') {
         if (!is_file($bin)) {
             ws_ende(500, 'WIFI;OK=0;ERR=CHECK_FEHLT');
         }
-        @exec('nohup perl ' . escapeshellarg($bin) . ' > /dev/null 2>&1 &');
+        /* C13 (Durchgang 02.10.2026): --auftrag - ein Befehl aus Loxone sucht
+         * auch bei ausgeschaltetem regelmaessigem Suchen. */
+        @exec('nohup perl ' . escapeshellarg($bin) . ' --auftrag > /dev/null 2>&1 &');
         ws_ende(200, 'WIFI;OK=1;AKTION=scan');
     }
 
@@ -187,9 +189,35 @@ if ($ws_aktion !== '') {
             }
             $neu[$schluessel] = $ws_wert;
         }
+        /* C6 (Durchgang 02.10.2026, Entscheidung 19, X-7): steht der Wert schon
+         * so in der Konfiguration, wird nichts geschrieben und der Listener nicht
+         * neu gestartet - die Antwort traegt UNVERAENDERT=1. Bis 3.2.9 schrieb
+         * jeder Aufruf die Konfiguration neu und startete den Listener neu; in
+         * der Luecke von etwa einer Sekunde gingen MQTT-Befehle verloren
+         * (Pruefer code Nr. 7: 4 Listener-Starts bei 4 Aufrufen).
+         *
+         * Derselbe Befehl binnen 60 s tut gar nichts. Kommt er spaeter wieder,
+         * wird nur der Zeitplan nachgezogen (ws_cron_apply ist unteilbar und
+         * heilt eine fehlende Verknuepfung) - geschrieben wird auch dann nichts. */
+        $ws_gleich = true;
+        foreach ($neu as $ws_k => $ws_v) {
+            if (!array_key_exists($ws_k, $ws_cfg) || (string) $ws_cfg[$ws_k] !== (string) $ws_v) {
+                $ws_gleich = false;
+                break;
+            }
+        }
+        if ($ws_gleich) {
+            if (!ws_befehl_binnen($ws_aktion, $ws_wert)) {
+                ws_befehl_merken($ws_aktion, $ws_wert);
+                ws_cron_apply(ws_cfg($neu, 'BASE.ENABLED', '0'), ws_cfg($neu, 'BASE.CRON', '3'));
+            }
+            ws_ende(200, ws_endpunkt_zeile('WIFI', array('OK' => 1, 'AKTION' => $ws_aktion,
+                                                         'WERT' => $ws_wert, 'UNVERAENDERT' => 1)));
+        }
         if (!ws_config_write($neu)) {
             ws_ende(500, 'WIFI;OK=0;ERR=SCHREIBEN');
         }
+        ws_befehl_merken($ws_aktion, $ws_wert);
         ws_cron_apply(ws_cfg($neu, 'BASE.ENABLED', '0'), ws_cfg($neu, 'BASE.CRON', '3'));
         ws_listener_restart();
         ws_ende(200, ws_endpunkt_zeile('WIFI', array('OK' => 1,
@@ -230,7 +258,10 @@ foreach ($ws_users as $u) {
 
 $ws_fritz  = (string) ws_cfg($ws_cfg, 'BASE.FRITZBOX_ENABLE', '0');
 $ws_aktiv  = (string) ws_cfg($ws_cfg, 'BASE.ACTIVE_SCAN', '0');
-$ws_mode   = ($ws_fritz === '1' && $ws_aktiv === '1') ? 0 : (($ws_fritz === '1') ? 1 : 2);
+/* C8 (Durchgang 02.10.2026): beide Wege aus heisst -1 ("keine Suche"), nicht
+ * 2 ("nur Scan") - so wie status/mode im Listener. */
+$ws_mode   = ($ws_fritz === '1' && $ws_aktiv === '1') ? 0
+           : (($ws_fritz === '1') ? 1 : (($ws_aktiv === '1') ? 2 : -1));
 
 $ws_felder = array(
     'OK'       => $ws_frisch ? (int) ($ws_z['ok'] === 1) : 0,

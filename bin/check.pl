@@ -82,6 +82,8 @@ use IO::Socket;
 use Net::MQTT::Simple;
 use Data::Validate::IP;
 use Capture::Tiny qw/capture/;
+# C3 (Durchgang 02.10.2026): die Namen der Personen werden dekodiert, siehe unten.
+use Encode qw(decode);
 
 # Entfallen sind LWP::Simple, File::HomeDir, Cwd und POSIX: keiner der vier
 # Namen kam ausserhalb seiner use-Zeile im Skript vor. File::HomeDir war der
@@ -169,24 +171,48 @@ our $use_cache   = $pcfg->param("BASE.USE_CACHE")       // 1;
 my $user_count   = $pcfg->param("BASE.USERS")           // 0;
 my $udp_enable   = $pcfg->param("BASE.UDP_ENABLE")      // 0;
 my $logmax       = $pcfg->param("BASE.LOGMAX")          // 500;
+my $enabled      = $pcfg->param("BASE.ENABLED")         // 0;
 
 # Config::Simple gibt bei einem Wert mit Komma ein Feld zurueck. Hier kommt
 # das nicht vor, aber ein Feld in einer Zahlenrechnung waere ein stiller
 # Fehler - deshalb wird jeder Skalar auch als solcher behandelt.
 for my $r (\$udpport, \$fritz_enable, \$fritz_host, \$fritz_port, \$fritz_user,
            \$fritz_pass, \$active_scan, \$ping_cmd, \$use_cache, \$user_count,
-           \$udp_enable, \$logmax) {
+           \$udp_enable, \$logmax, \$enabled) {
     $$r = ref($$r) eq 'ARRAY' ? join(',', @{$$r}) : $$r;
 }
 
 # Commandline options
 my $verbose = '';
 my $mode = '';
+my $auftrag = 0;
 GetOptions('verbose' => \$verbose,
            'mode=s'  => \$mode,
+           'auftrag' => \$auftrag,
            'quiet'   => sub { $verbose = 0 });
 
 LOGSTART "Starting $0 Version $version";
+
+##########################################################################
+# Regelmaessiges Suchen ausgeschaltet? (C13, Durchgang 02.10.2026)
+#
+# BASE.ENABLED wurde bis 3.2.9 nirgends gelesen; der Zeitplan hing allein an
+# der Cron-Verknuepfung. Eine liegengebliebene Verknuepfung (Deinstallation
+# ohne Aufraeumen, dann Neuinstallation mit ENABLED=0) liess dieses Skript im
+# alten Takt weitersuchen, waehrend die Oberflaeche "aus" zeigte - gemessen im
+# Installer-Pruefstand (Fall N2).
+#
+# Ein Lauf aus dem Zeitplan sucht deshalb nur bei ENABLED=1. Ein Auftrag -
+# Endpunkt aktion=scan, MQTT cmd/scan, Knopf im Reiter Test - traegt
+# --auftrag (der Listener dazu --mode) und sucht immer.
+##########################################################################
+
+if ("$enabled" ne "1" && !$auftrag && $mode eq '') {
+    LOGINF "Regelmaessiges Suchen ist ausgeschaltet (ENABLED=$enabled) - ein Lauf aus dem "
+         . "Zeitplan sucht nicht. Auftraege (Endpunkt, cmd/scan, Reiter Test) suchen weiter.";
+    LOGEND "Nicht gesucht.";
+    exit 0;
+}
 
 ##########################################################################
 # Sperre - zwei Laeufe auf denselben Dateien vertragen sich nicht
@@ -243,6 +269,13 @@ for (my $i = 1; $i <= $user_count; $i++) {
     $user{NAME} = $pcfg->param("USER$i.NAME");
     $user{NAME} = '' if (!defined $user{NAME});
     $user{NAME} = join(',', @{$user{NAME}}) if (ref($user{NAME}) eq 'ARRAY');
+    # C3 (Durchgang 02.10.2026): Config::Simple liefert den Namen als BYTES der
+    # UTF-8-Datei. Die Umlautersetzung in mqtt_topic_name() traf darauf nie - aus
+    # "Jürgen" wurde wifi_ng/J_rgen, waehrend Oberflaeche, Themenliste und
+    # Vorlage wifi_ng/Juergen nennen (Pruefer code Nr. 4, mqtt Nr. 3, Oberflaeche
+    # Nr. 4). Fuer Thema und Abbild gilt jetzt der dekodierte Name. Protokoll und
+    # UDP-Zeile behalten die Bytes: sie sahen bisher richtig aus und bleiben so.
+    $user{NAME_ZEICHEN} = utf8::is_utf8($user{NAME}) ? $user{NAME} : decode('UTF-8', $user{NAME});
     LOGDEB "Found config for $user{NAME}";
 
     my $input = $pcfg->param("USER$i.MACS");
@@ -264,8 +297,15 @@ for (my $i = 1; $i <= $user_count; $i++) {
             # Abweisen und MELDEN. Eine Adresse, die stillschweigend
             # verschwindet, schickt den Betreiber auf die Suche nach einem
             # Fehler, den er nicht sieht.
-            LOGERR "Adresse abgewiesen bei $user{NAME}: '$in' ist weder MAC- noch "
-                 . "IP-Adresse noch Rechnername - sie wird nicht gesucht.";
+            if (mac_mit_strich($in)) {
+                # O3 (Durchgang 02.10.2026): bis 3.2.9 als Rechnername genommen und
+                # nie gefunden - ohne ein Wort.
+                LOGERR "Adresse abgewiesen bei $user{NAME}: '$in' ist eine MAC-Adresse mit "
+                     . "Bindestrichen - bitte mit Doppelpunkten schreiben (aa:bb:cc:dd:ee:ff).";
+            } else {
+                LOGERR "Adresse abgewiesen bei $user{NAME}: '$in' ist weder MAC- noch "
+                     . "IP-Adresse noch Rechnername - sie wird nicht gesucht.";
+            }
             $abgewiesen++;
         }
     }
@@ -273,12 +313,22 @@ for (my $i = 1; $i <= $user_count; $i++) {
     $user{IPS} = \@ips;
     $user{ONLINE} = 0;
     $user{WEG} = '';
+    # C1: hat die Box ueber diese Person nichts Verwertbares gesagt? Und hat der
+    # aktive Scan sie stattdessen gemessen?
+    $user{FRITZ_STOERUNG} = 0;
+    $user{GESCANNT} = 0;
     push(@users, \%user);
 }
 my $anzahl = scalar(@users);
 
 my $user_online = 0;
 my $stoerung = '';
+# C2 (Durchgang 02.10.2026): ob die Fritz!Box-Abfrage EINGESCHALTET ist, steht
+# hier fest - $fritz_enable wird bei einer Stoerung weiter unten auf 0 gesetzt.
+# Bis 3.2.9 fragte der Hinweis "Weder ... eingeschaltet" danach und ueberschrieb
+# den wahren Grund (Pruefer code Nr. 3, mqtt Nr. 7).
+my $fritz_konfig = $fritz_enable;
+my $fritz_gestoert = 0;
 
 ##########################################################################
 # Weg 1: die Fritz!Box fragen
@@ -317,17 +367,44 @@ if ($fritz_enable) {
                  . "stehen in den Einstellungen unter 'Anmeldung an der Fritz!Box'.";
         }
         $fritz_enable = 0;
+        $fritz_gestoert = 1;
+    }
+
+    # C1 (Durchgang 02.10.2026): XMLin steht in eval. Bis 3.2.9 brach eine
+    # Antwort mit Status 200, die kein XML ist (Anmeldeseite, fremdes Geraet
+    # unter fritz.box), das ganze Skript ab - ohne LOGEND, ohne Abbild, ohne
+    # MQTT, und der aktive Scan im Modus "beides" lief nicht (Pruefer code
+    # Nr. 11, Fall F6). Jetzt ist das eine Stoerung mit Grund wie eine
+    # unerreichbare Box, und der aktive Scan laeuft weiter.
+    my $discover;
+    my @dienste = ();
+    if ($fritz_enable) {
+        $discover = eval { XMLin($resp_discover->decoded_content) };
+        my $grund = $@;
+        if (ref($discover) eq 'HASH') {
+            @dienste = eval { @{$discover->{device}->{deviceList}->{device}->[0]->{serviceList}->{service}} };
+        } else {
+            $grund = 'keine lesbare Struktur' if (!defined $grund || $grund eq '');
+            $grund =~ s/\s+$//;
+            $stoerung = 'Fritz!Box: tr64desc.xml ist kein lesbares XML (HTTP '
+                      . ($resp_discover->code // '?') . ')';
+            LOGERR "$stoerung - $grund";
+            $fritz_enable = 0;
+            $fritz_gestoert = 1;
+        }
     }
 
     if ($fritz_enable) {
-        my $discover = XMLin($resp_discover->decoded_content);
-        LOGINF "$discover->{device}->{modelName} detected...";
+        my $modell = eval { $discover->{device}->{modelName} };
+        $modell = '?' if (!defined $modell || ref($modell));
+        LOGINF "$modell detected...";
 
         # Parse XML service response, get needed parameters for LAN host service
         my $control_url = "not set";
         my $service_type = "not set";
         my $service_command = "GetSpecificHostEntry"; # fixed command
-        foreach my $s (@{$discover->{device}->{deviceList}->{device}->[0]->{serviceList}->{service}}) {
+        foreach my $s (@dienste) {
+            next if (ref($s) ne 'HASH' || !defined $s->{serviceId});
             if ("urn:LanDeviceHosts-com:serviceId:Hosts1" =~ m/.*\Q$s->{serviceId}\E.*/) {
                 $control_url = $s->{controlURL};
                 $service_type = $s->{serviceType};
@@ -337,6 +414,7 @@ if ($fritz_enable) {
         if ($control_url eq "not set" or $service_type eq "not set") {
             $stoerung = 'Fritz!Box: control URL/service type not found';
             LOGERR $stoerung;
+            $fritz_gestoert = 1;
         } else {
             $ua->default_header('SOAPACTION' => "$service_type#$service_command");
 
@@ -348,6 +426,7 @@ if ($fritz_enable) {
                     next;
                 }
                 LOGINF "Checking devices from User: $users[$i]{NAME}";
+                my $mac_stoerung = 0;
                 foreach my $mac (@macs) {
                     my $init_request = <<"EOD";
             <?xml version="1.0" encoding="utf-8"?>
@@ -402,6 +481,12 @@ EOD
                               . "in den Einstellungen unter 'Anmeldung an der Fritz!Box' einen "
                               . "Benutzernamen und das zugehoerige Kennwort ein.";
                         LOGERR $rat;
+                        # C1: fuer diese und alle folgenden Personen mit Adressen
+                        # hat die Box nichts gesagt.
+                        for my $k ($i .. $anzahl - 1) {
+                            $users[$k]{FRITZ_STOERUNG} = 1 if (@{$users[$k]{MACS}});
+                        }
+                        $mac_stoerung = 1;
                         $abbruch = 1;
                         last;
                     }
@@ -409,9 +494,21 @@ EOD
                     my $response = $resp_init->decoded_content;
                     $response = '' if (!defined $response);
                     my $xml_mac_resp = eval { XMLin($response) };
-                    if (!$xml_mac_resp) {
+                    # C1 (Durchgang 02.10.2026): eine unlesbare Antwort ist eine
+                    # Stoerung, keine Abwesenheit. Bis 3.2.9 blieb die Person auf 0
+                    # und der Lauf auf ok=1 (Pruefer code Nr. 2, HTTP 500).
+                    if (ref($xml_mac_resp) ne 'HASH') {
                         LOGERR "Antwort der Fritz!Box nicht lesbar fuer $mac (HTTP "
                              . ($resp_init->code // '?') . ")";
+                        $mac_stoerung = 1;
+                        $stoerung = 'Fritz!Box: Antwort nicht lesbar (HTTP '
+                                  . ($resp_init->code // '?') . ')' if ($stoerung eq '');
+                        next;
+                    }
+                    if (ref($xml_mac_resp->{'s:Body'}) ne 'HASH') {
+                        LOGERR "Antwort der Fritz!Box ohne SOAP-Koerper fuer $mac";
+                        $mac_stoerung = 1;
+                        $stoerung = 'Fritz!Box: Antwort ohne SOAP-Koerper' if ($stoerung eq '');
                         next;
                     }
 
@@ -429,7 +526,17 @@ EOD
                         } else {
                             LOGERR "Fritz!Box meldet einen Fehler fuer $mac"
                                  . (defined $ec ? " (Code $ec)" : "");
+                            # C1: nur 714 heisst "unbekannt, also nicht da".
+                            $mac_stoerung = 1;
+                            $stoerung = 'Fritz!Box: Fehler ' . (defined $ec ? "Code $ec " : '')
+                                      . 'bei GetSpecificHostEntry' if ($stoerung eq '');
                         }
+                    }
+                    if (!exists $xml_mac_resp->{'s:Body'}->{'s:Fault'}
+                        && !exists $xml_mac_resp->{'s:Body'}->{'u:GetSpecificHostEntryResponse'}) {
+                        LOGERR "Antwort der Fritz!Box ohne Ergebnis fuer $mac";
+                        $mac_stoerung = 1;
+                        $stoerung = 'Fritz!Box: Antwort ohne Ergebnis' if ($stoerung eq '');
                     }
                     if (exists $xml_mac_resp->{'s:Body'}->{'u:GetSpecificHostEntryResponse'}) {
                         my $r = $xml_mac_resp->{'s:Body'}->{'u:GetSpecificHostEntryResponse'};
@@ -452,6 +559,12 @@ EOD
                         }
                     }
                 }
+                # C1: eine Stoerung bei einer Adresse dieser Person, und keine
+                # andere Adresse hat "da" gemeldet - dann hat die Box ueber diese
+                # Person nichts ausgesagt.
+                if ($mac_stoerung && !$users[$i]{ONLINE}) {
+                    $users[$i]{FRITZ_STOERUNG} = 1;
+                }
             }
         }
     }
@@ -470,6 +583,7 @@ if ($active_scan) {
             LOGDEB "Skipping $users[$i]{NAME}, because we already have a result";
             next;
         }
+        $users[$i]{GESCANNT} = 1;
         LOGINF "Pinging Devices for user: $users[$i]{NAME}";
 
         my $gefunden = 0;
@@ -512,14 +626,45 @@ if ($active_scan) {
 # EINMAL senden - erst jetzt, wenn das Ergebnis vollstaendig ist
 ##########################################################################
 
-my $lauf_ok = ($stoerung eq '' && ($fritz_enable || $active_scan)) ? 1 : 0;
-if (!$fritz_enable && !$active_scan) {
+my $lauf_ok = ($stoerung eq '' && ($fritz_konfig || $active_scan)) ? 1 : 0;
+if (!$fritz_konfig && !$active_scan) {
     $stoerung = 'Weder Fritz!Box-Abfrage noch aktiver Scan ist eingeschaltet.';
     LOGWARN $stoerung;
 }
 
-zustand_schreiben($lauf_ok, $stoerung, \@users);
-sendFoundUsers(\@users, $lauf_ok);
+##########################################################################
+# Ausfall ist nicht abwesend (C1, Entscheidung 8, Durchgang 02.10.2026)
+#
+# Bis 3.2.9 kippte bei einer Stoerung der Suche jede Person retained auf 0 -
+# Box nicht erreichbar, 401, HTTP 500, SOAP-Fault, beide Wege aus (Pruefer
+# code Nr. 1, mqtt Nr. 1). Eine Loxone-Logik, die status/ok nicht mit
+# auswertet, schaltete "alle weg".
+#
+# Jetzt: wer in diesem Lauf nicht gemessen wurde, geht nicht hinaus - weder
+# ueber MQTT noch ueber UDP. Im Abbild bleibt sein letzter Messwert stehen,
+# und status/ok geht mit dem wahren Grund auf 0. Gemessen ist eine Person,
+# wenn die Box ueber sie etwas Verwertbares gesagt hat oder der aktive Scan
+# sie abgesucht hat (Modus "beides" bei gestoerter Box).
+##########################################################################
+
+my $ohne_aussage = 0;
+foreach my $u (@users) {
+    my $box_stumm = $u->{FRITZ_STOERUNG} || ($fritz_gestoert && @{$u->{MACS}});
+    my $gemessen = ($fritz_konfig || $active_scan) && (!$box_stumm || $u->{GESCANNT} || $u->{ONLINE});
+    $u->{AUSSAGE} = $gemessen ? 1 : 0;
+    $ohne_aussage++ if (!$gemessen);
+}
+if ($ohne_aussage) {
+    LOGWARN "$ohne_aussage Person(en) ohne Aussage in diesem Lauf - sie werden nicht gesendet, "
+          . "im Abbild bleibt der letzte Messwert stehen, und status/ok steht auf 0.";
+}
+
+# C4: der Zaehler wird EINMAL je Lauf bestimmt. Bis 3.2.9 las sendFoundUsers()
+# ihn ein zweites Mal aus dem gerade geschriebenen Abbild; MQTT und Abbild lagen
+# dauerhaft um 1 auseinander (Pruefer code Nr. 12).
+my $zaehler = zaehler_lesen();
+zustand_schreiben($lauf_ok, $stoerung, \@users, $zaehler);
+sendFoundUsers(\@users, $lauf_ok, $zaehler);
 
 if ($abgewiesen) {
     LOGWARN "$abgewiesen Adresse(n) wurden abgewiesen - siehe die Zeilen oben.";
@@ -540,8 +685,29 @@ if ($abgewiesen) {
 if (!$udp_enable) {
     my $skript = "$lbpbindir/mqtt_listener.pl";
     if (-f $skript && !listener_pid($skript)) {
-        LOGWARN "Der MQTT-Listener lief nicht - er wird neu gestartet.";
-        system('/bin/sh', '-c', "nohup perl '$skript' > /dev/null 2>&1 &");
+        # I4 (Durchgang 02.10.2026): Startsperre, gemeinsam mit daemon/daemon.
+        # Bis 3.2.9 fragten beide Wege erst /proc und starteten dann, ohne
+        # gemeinsame Sperre - Systemstart mit nachgeholtem Cron-Takt ergab in
+        # 10 von 10 Runden zwei Listener (Installer-Pruefer, Fall D1). Die Sperre
+        # liegt NEBEN dem Datenordner, den purge_installation loescht. Perl setzt
+        # FD_CLOEXEC: die Schale unten und der Listener erben sie nicht.
+        my $sp;
+        my $gesperrt = 0;
+        if (open($sp, '>>', "$lbpdatadir.listener_start.lock")) {
+            $gesperrt = flock($sp, LOCK_EX | LOCK_NB) ? 1 : -1;
+        }
+        if ($gesperrt < 0) {
+            LOGINF "Ein anderer Start des MQTT-Listeners laeuft gerade - hier wird keiner gestartet.";
+        } elsif (!listener_pid($skript)) {
+            LOGWARN "Der MQTT-Listener lief nicht - er wird neu gestartet.";
+            system('/bin/sh', '-c', "nohup perl '$skript' > /dev/null 2>&1 &");
+            # Die Sperre haelt, bis der neue Listener in /proc steht.
+            for (1 .. 20) {
+                last if (listener_pid($skript));
+                select(undef, undef, undef, 0.1);
+            }
+        }
+        close($sp) if ($sp);
     }
 }
 
@@ -562,6 +728,8 @@ sub adresse_art
     $a = "$a";
     return '' if ($a eq '' || length($a) > 255);
     return 'mac' if ($a =~ /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/);
+    # O3: eine MAC mit Bindestrichen ist nie ein Rechnername.
+    return '' if (mac_mit_strich($a));
     my $v = Data::Validate::IP->new;
     return 'ip4' if ($v->is_ipv4($a));
     return 'ip6' if ($v->is_ipv6($a));
@@ -673,7 +841,7 @@ sub ping
 
 sub sendFoundUsers
 {
-    my ($users, $ok) = @_;
+    my ($users, $ok, $zaehler) = @_;
     my $jetzt = time();
 
     if ($udp_enable) {
@@ -689,6 +857,8 @@ sub sendFoundUsers
                 next;
             }
             foreach my $u (@{$users}) {
+                # C1: ohne Aussage keine Zeile - auch keine 0.
+                next if (!$u->{AUSSAGE});
                 LOGOK "Sending Data '$u->{NAME}:$u->{ONLINE}' to $miniservers{$ms}{Name} "
                     . "IP: $miniservers{$ms}{IPAddress} Port:$udpport";
                 $sock->send("$u->{NAME}:$u->{ONLINE}")
@@ -727,8 +897,23 @@ sub sendFoundUsers
     }
 
     my $gesendet = 0;
+    my @umstieg = ();
     foreach my $u (@{$users}) {
-        my $topic = "wifi_ng/" . mqtt_topic_name($u->{NAME});
+        my $name_thema = mqtt_topic_name($u->{NAME_ZEICHEN});
+        # C3: das Thema, das bis 3.2.9 tatsaechlich hinausging - dieselbe
+        # Ersetzung auf den Bytes. Weicht es ab, bekommt es einmal "-" retained
+        # (umstieg_abraeumen() unten, mit Nachlesen beim Broker).
+        my $alt_thema = mqtt_topic_name($u->{NAME});
+        push(@umstieg, "wifi_ng/$alt_thema") if ($alt_thema ne '' && $alt_thema ne $name_thema);
+        if (!$u->{AUSSAGE}) {
+            LOGINF "Keine Aussage ueber $u->{NAME} in diesem Lauf - wifi_ng/$name_thema wird nicht gesendet.";
+            next;
+        }
+        if ($name_thema eq '') {
+            LOGERR "Aus dem Namen '$u->{NAME}' entsteht kein MQTT-Thema - nicht gesendet.";
+            next;
+        }
+        my $topic = "wifi_ng/" . $name_thema;
         LOGOK "Sending '$u->{ONLINE}' to $topic on MQTT broker $mqttcred->{brokeraddress}";
         $mqtt->retain($topic, $u->{ONLINE});
         $gesendet++;
@@ -759,14 +944,17 @@ sub sendFoundUsers
     # ---------------------------------------------------------------
     $mqtt->publish("wifi_ng/status/ok", $ok);
     $mqtt->publish("wifi_ng/status/ts", $jetzt);
-    $mqtt->publish("wifi_ng/status/zaehler", zaehler_lesen());
+    $mqtt->publish("wifi_ng/status/zaehler", $zaehler);
 
     # Ob der Listener laeuft, wird HIER gemessen und nicht vom Listener
     # selbst behauptet. Net::MQTT::Simple kennt keinen letzten Willen; ein
     # Dienst, der seinen eigenen Tod melden soll, ist ohnehin der falsche
     # Zeuge. Alle drei Minuten eine echte Messung ist besser.
-    $mqtt->publish("wifi_ng/status/listener",
-                   (-f "$lbpbindir/mqtt_listener.pl" && listener_pid("$lbpbindir/mqtt_listener.pl")) ? 1 : 0);
+    #
+    # C10 (Durchgang 02.10.2026): 1 nur, wenn der Prozess laeuft UND er
+    # selbst meldet, verbunden zu sein und abonniert zu haben - siehe
+    # listener_bereit().
+    $mqtt->publish("wifi_ng/status/listener", listener_bereit() ? 1 : 0);
     $gesendet += 4;
 
     # Net::MQTT::Simple puffert. Ein disconnect() unmittelbar nach dem
@@ -779,6 +967,7 @@ sub sendFoundUsers
     }
     $mqtt->disconnect();
     LOGOK "$gesendet Themen veroeffentlicht.";
+    umstieg_abraeumen(@umstieg) if (@umstieg);
 }
 
 # Ein MQTT-Thema darf weder Leerzeichen noch Umlaute enthalten. Der Name der
@@ -817,7 +1006,10 @@ sub zustand_lesen
     my $f = "$lbpdatadir/zustand.json";
     return undef if (!-f $f);
     my $inhalt = '';
-    if (open(my $fh, '<', $f)) {
+    # Ohne Kodierungsschicht lesen: decode_json erwartet Bytes. Mit dem
+    # :utf8 aus 'use open' kaeme ein richtig kodiertes 'ü' als Zeichen an und
+    # decode_json scheiterte daran (seit C3 steht es richtig kodiert darin).
+    if (open(my $fh, '<:raw', $f)) {
         local $/;
         $inhalt = <$fh>;
         close($fh);
@@ -834,16 +1026,36 @@ sub zustand_lesen
 # "noch nie gelaufen" - also genau die Aussage, die sie nicht treffen darf.
 sub zustand_schreiben
 {
-    my ($ok, $fehler, $users) = @_;
+    my ($ok, $fehler, $users, $zaehler) = @_;
+    # C1: wer in diesem Lauf keine Aussage hat, behaelt seinen letzten
+    # Messwert aus dem bisherigen Abbild (gefunden ueber das Thema). Gibt es
+    # keinen, steht -1 da - "ohne Aussage", wie am Endpunkt.
+    my %vorher = ();
+    my $alt = zustand_lesen();
+    if (ref($alt) eq 'HASH' && ref($alt->{personen}) eq 'ARRAY') {
+        foreach my $pz (@{$alt->{personen}}) {
+            next if (ref($pz) ne 'HASH' || !defined $pz->{name});
+            $vorher{mqtt_topic_name($pz->{name})} = $pz;
+        }
+    }
     my @p = ();
     foreach my $u (@{$users}) {
-        push(@p, { name => $u->{NAME}, online => int($u->{ONLINE}),
-                   weg => ($u->{WEG} ne '' ? $u->{WEG} : 'keiner') });
+        my $name = $u->{NAME_ZEICHEN};
+        if ($u->{AUSSAGE}) {
+            push(@p, { name => $name, online => int($u->{ONLINE}), aussage => 1,
+                       weg => ($u->{WEG} ne '' ? $u->{WEG} : 'keiner') });
+            next;
+        }
+        my $v = $vorher{mqtt_topic_name($name)};
+        my $online = (ref($v) eq 'HASH' && defined $v->{online} && "$v->{online}" =~ /^-?[01]$/)
+                   ? int($v->{online}) : -1;
+        my $weg = (ref($v) eq 'HASH' && defined $v->{weg}) ? $v->{weg} : 'keiner';
+        push(@p, { name => $name, online => $online, aussage => 0, weg => $weg });
     }
     my $daten = {
         ts       => time(),
         ok       => int($ok),
-        zaehler  => zaehler_lesen(),
+        zaehler  => int($zaehler),
         fehler   => $fehler,
         weg      => ($udp_enable ? 'udp' : 'mqtt'),
         personen => \@p,
@@ -877,6 +1089,13 @@ sub zustand_schreiben
 # Laeuft unser Listener? Argumentweise gegen den VOLLEN Pfad - "pgrep -f"
 # traefe auch einen Editor mit offener Datei oder ein zweites Exemplar des
 # Plugins.
+#
+# C7 (Durchgang 02.10.2026): dieselbe Pruefung wie ws_ist_listener() und
+# daemon/daemon - GENAU zwei Argumente, argv[0] ist ein perl, argv[1] ist
+# zeichengenau der Pfad. Bis 3.2.9 genuegte hier, dass argv[0] ODER argv[1]
+# der Pfad war: ein Koeder "tail <pfad> -f" galt als laufender Listener,
+# status/listener meldete 1, und der Waechter heilte nicht (Pruefer code
+# Nr. 8, Fall F11b). Bauart K1/K2, in 3.2.7 an den anderen Stellen behoben.
 sub listener_pid
 {
     my ($skript) = @_;
@@ -886,20 +1105,101 @@ sub listener_pid
     while (my $e = readdir($dh)) {
         next if ($e !~ /^[0-9]+$/);
         my $fh;
-        next if (!open($fh, '<', "/proc/$e/cmdline"));
+        next if (!open($fh, '<:raw', "/proc/$e/cmdline"));
         local $/;
         my $roh = <$fh>;
         close($fh);
         next if (!defined $roh || $roh eq '');
+        # split laesst das leere Feld hinter dem letzten Nullbyte weg.
         my @args = split(/\0/, $roh);
-        if ((defined $args[0] && $args[0] eq $skript)
-            || (defined $args[1] && $args[1] eq $skript)) {
+        next if (scalar(@args) != 2);
+        my $interp = $args[0];
+        $interp =~ s{.*/}{};
+        next if ($interp ne 'perl' && $interp !~ /^perl5/);
+        if ($args[1] eq $skript) {
             $treffer = $e;
             last;
         }
     }
     closedir($dh);
     return $treffer;
+}
+
+# Ist der Listener bereit - laeuft er, ist er verbunden, hat er abonniert?
+#
+# C10 (Durchgang 02.10.2026): der Listener legt alle 30 s und bei jedem
+# Wiederverbinden data/plugins/<ordner>/listener.json ab (pid, verbunden,
+# abonniert, ts). Gezaehlt wird nur ein frischer Eintrag (hoechstens 120 s)
+# derselben Prozessnummer. Bis 3.2.9 genuegte der Prozess: ein Listener, dem
+# nach einem Wiederverbinden das Abonnement fehlte, galt als "1", waehrend
+# Befehle aus Loxone ins Leere liefen (Pruefer mqtt Nr. 6).
+sub listener_bereit
+{
+    my $skript = "$lbpbindir/mqtt_listener.pl";
+    return 0 if (!-f $skript);
+    my $pid = listener_pid($skript);
+    return 0 if (!$pid);
+    my $fh;
+    return 0 if (!open($fh, '<:raw', "$lbpdatadir/listener.json"));
+    local $/;
+    my $roh = <$fh>;
+    close($fh);
+    my $j = eval { decode_json(defined $roh ? $roh : '') };
+    return 0 if (ref($j) ne 'HASH');
+    return 0 if (!defined $j->{pid} || "$j->{pid}" ne "$pid");
+    return 0 if (!$j->{verbunden} || !$j->{abonniert});
+    my $alter = time() - (defined $j->{ts} && $j->{ts} =~ /^[0-9]+$/ ? $j->{ts} : 0);
+    return ($alter >= -60 && $alter <= 120) ? 1 : 0;
+}
+
+# O3: eine MAC-Adresse mit Bindestrichen (Schreibweise von ipconfig /all).
+sub mac_mit_strich
+{
+    my ($a) = @_;
+    return (defined $a && $a =~ /^([0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}$/) ? 1 : 0;
+}
+
+# C3: die bis 3.2.9 gesendeten Umlautthemen (wifi_ng/J_rgen) bekommen einmal
+# "-" retained - aber nur, wenn dort noch ein anderer Wert zurueckbehalten
+# liegt, und mit Nachlesen beim Broker (bin/mqtt_abraeumen.pl). Bestaetigte
+# Themen werden in data/plugins/<ordner>/umstieg_erledigt.txt vorgemerkt und
+# nicht wieder gefragt; nach einem Update (der Datenordner ist dann leer) wird
+# einmal nachgesehen.
+sub umstieg_abraeumen
+{
+    my (@themen) = @_;
+    my $merk = "$lbpdatadir/umstieg_erledigt.txt";
+    my %erledigt = ();
+    if (open(my $fh, '<:raw', $merk)) {
+        while (my $z = <$fh>) {
+            chomp($z);
+            $erledigt{$z} = 1 if ($z ne '');
+        }
+        close($fh);
+    }
+    my @offen = grep { !$erledigt{$_} } @themen;
+    return if (!@offen);
+    my $helfer = "$lbpbindir/mqtt_abraeumen.pl";
+    if (!-f $helfer) {
+        LOGWARN "Umstieg der Umlautthemen: $helfer fehlt - nichts abgeraeumt.";
+        return;
+    }
+    my ($rc, $out, $err) = lauf($^X, $helfer, '--strich-wenn-da', @offen);
+    my $code = $rc >> 8;
+    foreach my $z (split(/\n/, $out)) {
+        LOGINF "Umstieg Umlautthema: $z";
+    }
+    if ($rc == 0) {
+        if (open(my $fh, '>>:raw', $merk)) {
+            print $fh "$_\n" foreach (@offen);
+            close($fh);
+        }
+        LOGOK "Umstieg der Umlautthemen beim Broker bestaetigt: " . join(', ', @offen);
+    } else {
+        chomp($err);
+        LOGWARN "Umstieg der Umlautthemen nicht bestaetigt (Rueckgabe $code) - der naechste "
+              . "Lauf versucht es erneut. $err";
+    }
 }
 
 # Das Protokoll kappen.

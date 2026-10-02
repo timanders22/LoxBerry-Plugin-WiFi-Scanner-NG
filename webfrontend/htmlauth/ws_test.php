@@ -58,8 +58,9 @@ $frisch = ws_zustand_frisch($cfg, $zustand);
 
 $fritz  = (string) ws_cfg($cfg, 'BASE.FRITZBOX_ENABLE', '0');
 $active = (string) ws_cfg($cfg, 'BASE.ACTIVE_SCAN', '0');
+// C8 (Durchgang 02.10.2026): beide Wege aus heisst "keine Suche", nicht Modus 2.
 $mode = ($fritz === '1' && $active === '1') ? ws_t('T.M_BEIDES')
-      : (($fritz === '1') ? ws_t('T.M_FRITZ') : ws_t('T.M_SCAN'));
+      : (($fritz === '1') ? ws_t('T.M_FRITZ') : (($active === '1') ? ws_t('T.M_SCAN') : ws_t('T.M_AUS')));
 
 /** Eine Ueberschrift unterstreichen. strlen zaehlt Bytes - bei Umlauten
  *  waere die Linie zu lang, deshalb die Zeichenzahl in UTF-8. */
@@ -105,7 +106,10 @@ if (isset($_GET['config'])) {
     echo ws_strich(ws_t('T.H_KONFIG')) . ws_t('T.DATEI') . ': ' . $p['config'] . "\n\n";
     $geheim = ws_geheime_schluessel();
     foreach ($cfg as $k => $v) {
-        printf("%-26s = %s\n", $k, in_array($k, $geheim, true) ? ws_maskieren($v) : $v);
+        /* O10 (Durchgang 02.10.2026): das Fritz!Box-Kennwort nur als "gesetzt
+         * (n Zeichen)"; bis 3.2.9 standen hier seine ersten drei Zeichen. */
+        printf("%-26s = %s\n", $k, $k === 'BASE.FRITZBOX_PASS' ? ws_kennwort_anzeige($v)
+               : (in_array($k, $geheim, true) ? ws_maskieren($v) : $v));
     }
     echo "\n" . ws_t('T.KONFIG_HINWEIS') . "\n";
     exit;

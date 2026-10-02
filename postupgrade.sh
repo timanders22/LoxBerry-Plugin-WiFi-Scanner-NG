@@ -15,14 +15,45 @@ ARGV5=$5 # Fifth argument is Base folder of LoxBerry
 SICHER="$ARGV5/data/plugins/$ARGV3.upgrade_sicherung"
 if [ -d "$SICHER" ]; then
     echo "<INFO> Copy back existing config files"
-    cp -p -r "$SICHER/config/." "$ARGV5/config/plugins/$ARGV3/" 2>/dev/null
+    # I2 (Durchgang 02.10.2026): jede Datei erst nach <datei>.neu, mit cmp
+    # nachgesehen, dann umbenannt - wie preupgrade.sh es beim Sichern tut. Die
+    # Sicherung faellt nur, wenn JEDE Datei byteweise angekommen ist. Bis 3.2.9
+    # kopierte cp direkt ueber die Konfiguration und loeschte die Sicherung ohne
+    # Pruefung: bei voller Karte (ulimit -f 0) stand danach eine Konfiguration
+    # mit 0 Byte da, und die Sicherung war fort (Installer-Pruefer Nr. 2, U2).
+    WS_ZIEL="$ARGV5/config/plugins/$ARGV3"
+    WS_FEHLT=""
+    mkdir -p "$WS_ZIEL" 2>/dev/null
+    for WS_Q in "$SICHER/config/"* "$SICHER/config/".[!.]*; do
+        [ -e "$WS_Q" ] || continue
+        WS_N=$(basename "$WS_Q")
+        if [ ! -f "$WS_Q" ]; then
+            WS_FEHLT="$WS_FEHLT $WS_N(keine Datei)"
+            continue
+        fi
+        rm -f "$WS_ZIEL/$WS_N.neu" 2>/dev/null
+        if cp -p "$WS_Q" "$WS_ZIEL/$WS_N.neu" 2>/dev/null && cmp -s "$WS_Q" "$WS_ZIEL/$WS_N.neu" \
+                && mv -f "$WS_ZIEL/$WS_N.neu" "$WS_ZIEL/$WS_N" 2>/dev/null \
+                && cmp -s "$WS_Q" "$WS_ZIEL/$WS_N"; then
+            :
+        else
+            rm -f "$WS_ZIEL/$WS_N.neu" 2>/dev/null
+            WS_FEHLT="$WS_FEHLT $WS_N"
+        fi
+    done
 
     echo "<INFO> Copy back existing log files"
     mkdir -p "$ARGV5/log/plugins/$ARGV3"
     cp -p -r "$SICHER/log/." "$ARGV5/log/plugins/$ARGV3/" 2>/dev/null
 
-    echo "<INFO> Remove backup folder"
-    rm -rf "$SICHER"
+    if [ -z "$WS_FEHLT" ]; then
+        echo "<INFO> Remove backup folder"
+        rm -rf "${SICHER:?}"
+    else
+        echo "<WARNING> Nicht zurueckgespielt:$WS_FEHLT - die Sicherung bleibt unter"
+        echo "<WARNING> $SICHER liegen. Von dort laesst sich die Konfiguration von Hand"
+        echo "<WARNING> zurueckkopieren; bitte vorher den Platz auf der Karte pruefen."
+    fi
 else
     echo "<INFO> Keine Sicherung vorhanden - offenbar eine Erstinstallation."
 fi

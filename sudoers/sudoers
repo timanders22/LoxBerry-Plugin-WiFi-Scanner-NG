@@ -1,4 +1,14 @@
 # Sudoers file for the plugin. Note: All scripts in sbin will be added automatically
+#
+# Was diese Regeln erlauben (C12, Durchgang 02.10.2026, Entscheidung 2 des
+# Hausherrn): arping, arp und arp-scan als root, mit BELIEBIGEN Argumenten -
+# arp etwa auch -s und -d, also das Aendern der ARP-Tabelle. Eine Grenze ueber
+# /etc/sudoers.d/lbdefaults hinaus ziehen sie nicht: der Benutzer loxberry
+# darf dort ohnehin ohne Kennwort systemctl, apt-get, dpkg und reboot aufrufen
+# und ist damit faktisch root. Den Schutz vor Fehlbedienung uebernimmt das
+# Plugin: check.pl prueft jede Adresse vor dem Aufruf und ruft als Liste ohne
+# Schale auf. Die Regeln nennen nur /usr/sbin/<werkzeug>; wo die Werkzeuge
+# liegen, zeigt der Reiter Test.
 %loxberry ALL = NOPASSWD: /usr/sbin/arping
 %loxberry ALL = NOPASSWD: /usr/sbin/arp
 %loxberry ALL = NOPASSWD: /usr/sbin/arp-scan

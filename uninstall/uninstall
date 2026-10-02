@@ -114,15 +114,48 @@ for D in /proc/[0-9]*; do
 done
 [ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein MQTT-Listener."
 
-echo "<WARNING> Im MQTT-Broker bleiben Werte stehen."
-echo "<INFO> Das Plugin veroeffentlicht die Anwesenheit mit gesetztem"
-echo "<INFO> Retain-Merker. Betroffen sind alle Themen unter"
-echo "<INFO>     wifi_ng/..."
-echo "<INFO> (je Person eine, dazu status/mode, status/interval,"
-echo "<INFO> status/enabled). Zum Aufraeumen: LoxBerry -> System ->"
-echo "<INFO> MQTT Gateway, dort die wifi_ng-Eintraege loeschen."
-echo "<INFO> Wer das nicht tut, sieht in Loxone noch jahrelang die"
-echo "<INFO> Anwesenheit vom Tag der Deinstallation."
+# ---------------------------------------------------------------
+# I3 (Durchgang 02.10.2026): der Zeitplan-Verweis heisst wifi_scanner, nicht
+# wie der Plugin-Name - LoxBerry entfernt beim Deinstallieren nur
+# cron.*/<name>. Bis 3.2.9 blieb er mit totem Ziel liegen und loeste nach
+# einer Neuinstallation wieder auf (Installer-Pruefer Nr. 3, Fall N2).
+# Entfernt wird nur ein Verweis, der auf check.pl DIESES Ordners zeigt.
+# ---------------------------------------------------------------
+for C in cron.01min cron.03min cron.05min cron.10min cron.15min cron.30min cron.hourly; do
+    V="$BASE/system/cron/$C/wifi_scanner"
+    [ -L "$V" ] || continue
+    Z=$(readlink "$V" 2>/dev/null)
+    if [ "$Z" = "$BASE/bin/plugins/$PDIR/check.pl" ]; then
+        rm -f "$V" && echo "<OK> Zeitplan-Verweis entfernt: $C/wifi_scanner"
+    else
+        echo "<INFO> $C/wifi_scanner zeigt auf $Z - nicht dieses Plugin, bleibt liegen."
+    fi
+done
+
+# ---------------------------------------------------------------
+# I6 (Durchgang 02.10.2026, Entscheidungen 3 und 26): die zurueckbehaltenen
+# Themen unter wifi_ng/ werden geleert, mit Nachlesen beim Broker
+# (bin/mqtt_abraeumen.pl). Bis 3.2.9 stand hier nur der Hinweis, sie von
+# Hand zu loeschen; in Loxone stand danach die Anwesenheit vom Tag der
+# Deinstallation. VOR allem anderen: LoxBerry entfernt bin/plugins/<ordner>/
+# erst nach diesem Skript.
+# ---------------------------------------------------------------
+HELFER="$BASE/bin/plugins/$PDIR/mqtt_abraeumen.pl"
+if [ -f "$HELFER" ] && command -v perl >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then BEGRENZT="timeout 90"; else BEGRENZT=""; fi
+    AUS=$($BEGRENZT perl -I "$BASE/libs/perllib" "$HELFER" --leeren-alle 2>&1)
+    RC=$?
+    printf '%s\n' "$AUS" | sed -n '/^\(GEFUNDEN\|ERGEBNIS\|OFFEN\|KEIN\)/s/^/<INFO> MQTT: /p'
+    case "$RC" in
+        0) echo "<OK> Zurueckbehaltene MQTT-Themen unter wifi_ng/ geleert, beim Broker nachgelesen." ;;
+        2) echo "<INFO> Der MQTT-Broker war nicht befragbar - falls noch Themen unter wifi_ng/"
+           echo "<INFO> zurueckbehalten liegen: LoxBerry -> System -> MQTT Gateway, dort loeschen." ;;
+        *) echo "<WARNING> Nicht alle zurueckbehaltenen Themen unter wifi_ng/ liessen sich leeren"
+           echo "<WARNING> (Rueckgabe $RC). LoxBerry -> System -> MQTT Gateway, dort die Reste loeschen." ;;
+    esac
+else
+    echo "<INFO> $HELFER oder perl fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
+fi
 
 # ---------------------------------------------------------------
 # Die Sicherung ausserhalb des Plugin-Ordners
@@ -152,9 +185,14 @@ echo "<INFO> Anwesenheit vom Tag der Deinstallation."
 # Anwesenheitsliste des Haushalts, auf einer Karte, von der jemand glaubt,
 # das Plugin sei entfernt.
 WEG=0
+# I1 (Durchgang 02.10.2026): dazu die .alt, die preinstall.sh bei einer
+# Neuinstallation beiseitelegt - sie tragen dasselbe wie die Zweitschriften.
 for BK in "$BASE/config/plugins/$PDIR.wifi_scanner.backup" \
           "$BASE/config/plugins/$PDIR.backup.wifi_scanner.cfg" \
-          "$BASE/config/plugins/$PDIR.backup.mqtt_subscriptions.cfg"; do
+          "$BASE/config/plugins/$PDIR.backup.mqtt_subscriptions.cfg" \
+          "$BASE/config/plugins/$PDIR.wifi_scanner.backup.alt" \
+          "$BASE/config/plugins/$PDIR.backup.wifi_scanner.cfg.alt" \
+          "$BASE/config/plugins/$PDIR.backup.mqtt_subscriptions.cfg.alt"; do
     if [ -f "$BK" ]; then
         dd if=/dev/zero of="$BK" bs=1024 count=8 conv=notrunc 2>/dev/null
         if rm -f "$BK"; then
@@ -170,7 +208,10 @@ done
 UEBRIG=0
 for BK in "$BASE/config/plugins/$PDIR.wifi_scanner.backup" \
           "$BASE/config/plugins/$PDIR.backup.wifi_scanner.cfg" \
-          "$BASE/config/plugins/$PDIR.backup.mqtt_subscriptions.cfg"; do
+          "$BASE/config/plugins/$PDIR.backup.mqtt_subscriptions.cfg" \
+          "$BASE/config/plugins/$PDIR.wifi_scanner.backup.alt" \
+          "$BASE/config/plugins/$PDIR.backup.wifi_scanner.cfg.alt" \
+          "$BASE/config/plugins/$PDIR.backup.mqtt_subscriptions.cfg.alt"; do
     [ -f "$BK" ] && UEBRIG=$((UEBRIG + 1))
 done
 if [ "$UEBRIG" -gt 0 ]; then
@@ -221,4 +262,8 @@ fi
 # $PDIR und $BASE stehen hier bewusst statt $UN_FOLDER/$UN_BASE: sie tragen
 # die Rueckfaelle vom Kopf dieser Datei.
 rm -f "$BASE/data/plugins/$PDIR.upgrade_laeuft" 2>/dev/null
+
+# I4 (Durchgang 02.10.2026): die beiden Sperrdateien des Listeners liegen
+# ebenfalls neben dem Datenordner.
+rm -f "$BASE/data/plugins/$PDIR.listener.lock" "$BASE/data/plugins/$PDIR.listener_start.lock" 2>/dev/null
 exit 0
