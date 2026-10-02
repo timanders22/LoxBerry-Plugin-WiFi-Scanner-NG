@@ -112,10 +112,18 @@ Anwesenheit deshalb nur zusammen mit `ok`. Ein ausgefallener Lauf ist kein
 
 **UDP** gibt es zusätzlich, für Aufbauten ohne MQTT-Gateway. Gesendet wird
 `<Name>:<0|1>` an den in den Einstellungen gewählten Port (Vorgabe 7007).
+Bei UDP läuft der MQTT-Listener nicht: weder Systemstart noch Installation,
+Endpunkt oder der Knopf im Reiter *Test* starten ihn, und der Wechsel auf UDP
+hält ihn an. Der Wechsel zurück auf MQTT startet ihn wieder.
+
+Der Reiter *Einbindung in Loxone* führt eine **Baustein-Liste** zum Nachbauen: die
+Eingänge der Vorlage, eine ODER-Kette über die Personen (je ODER höchstens zwei
+Eingänge), eine Ausschaltverzögerung, „Alle weg (gemessen)“ nur bei `status/ok` = 1
+und eine Meldung, wenn die Suche nicht mehr misst.
 
 ## Steuerung per MQTT aus Loxone
 
-Der Listener hört auf `wifi_ng/cmd/#`:
+Der Listener hört auf `wifi_ng/cmd/#` (nur, wenn der Übertragungsweg MQTT ist):
 
 | Thema | Nutzlast | Wirkung |
 |---|---|---|
@@ -172,6 +180,14 @@ Einstellungen, aber dieselben MQTT-Themen: beide senden unter `wifi_ng/`,
 beide hören auf `wifi_ng/cmd/#`, und die Deinstallation der einen leert die
 zurückbehaltenen Themen beider. Zwei Installationen nebeneinander sind
 deshalb nicht vorgesehen.
+
+## Version 3.2.10
+
+Baustein-Liste und Listener nur bei MQTT (Verbesserungsliste WiFi-c1, X-8).
+Gemessen mit Attrappen für Fritz!Box, Perl-Module, Broker und Gateway unter PHP 7.4, 8.3 und 8.5; nicht am Gerät, nicht an einer echten Fritz!Box.
+
+* **Baustein-Liste:** Der Reiter „Einbindung in Loxone“ zeigt jetzt, welche Bausteine man in Loxone Config anlegt und wie man sie verbindet. Dazu gehören die Eingänge der Vorlage `VI_wifiscanner.xml`, eine ODER-Kette für „jemand zu Hause“, eine Ausschaltverzögerung, „Alle weg (gemessen)“ nur bei `status_ok` = 1 und eine Störmeldung. Jeder UND/ODER-Baustein bekommt höchstens zwei Eingänge.
+* **Listener nur bei MQTT:** Ist UDP als Weg gewählt, startet der MQTT-Listener nicht mehr. Bisher lief er auch dann mit. Ein Wechsel von MQTT zu UDP hält ihn an, ein Wechsel zurück startet ihn.
 
 ## Version 3.2.9
 

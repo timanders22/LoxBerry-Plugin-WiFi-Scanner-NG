@@ -18,6 +18,7 @@
  *     ...?token=<TOKEN>&aktion=interval&wert=<n>  Takt in Minuten
  *     ...?token=<TOKEN>&aktion=mode&wert=0|1|2    Suchweg
  *     ...?token=<TOKEN>&aktion=listener           Listener neu starten
+ *                                                 (nur bei MQTT; bei UDP 409 ERR=WEG_UDP)
  *
  *   Selbsttest:
  *     ...?selftest=1&token=<TOKEN>
@@ -162,6 +163,11 @@ if ($ws_aktion !== '') {
     }
 
     if ($ws_aktion === 'listener') {
+        /* c1 (02.10.2026): der Listener laeuft nur bei MQTT. Bis 3.2.9 startete
+         * dieser Aufruf ihn auch bei UDP. */
+        if (ws_cfg($ws_cfg, 'BASE.UDP_ENABLE', '0') === '1') {
+            ws_ende(409, 'WIFI;OK=0;AKTION=listener;ERR=WEG_UDP');
+        }
         $pid = ws_listener_restart();
         ws_ende($pid ? 200 : 500,
                 ws_endpunkt_zeile('WIFI', array('OK' => $pid ? 1 : 0,
@@ -219,7 +225,13 @@ if ($ws_aktion !== '') {
         }
         ws_befehl_merken($ws_aktion, $ws_wert);
         ws_cron_apply(ws_cfg($neu, 'BASE.ENABLED', '0'), ws_cfg($neu, 'BASE.CRON', '3'));
-        ws_listener_restart();
+        /* c1: neu gestartet wird nur bei MQTT; bei UDP wird ein liegengebliebener
+         * Listener angehalten (bis 3.2.9 hier immer neu gestartet). */
+        if (ws_cfg($neu, 'BASE.UDP_ENABLE', '0') === '1') {
+            ws_listener_stop();
+        } else {
+            ws_listener_restart();
+        }
         ws_ende(200, ws_endpunkt_zeile('WIFI', array('OK' => 1,
                                                      'AKTION' => $ws_aktion, 'WERT' => $ws_wert)));
     }

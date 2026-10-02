@@ -70,6 +70,22 @@ if (!open($sperre, '>>', $sperrdatei)) {
     exit 0;
 }
 
+# c1 (02.10.2026): nur bei MQTT. Steht der Uebertragungsweg auf UDP, wird der
+# Listener nicht gebraucht und beendet sich, bevor er den Broker anspricht -
+# gleich, wer ihn gestartet hat (Systemstart, Installation, Oberflaeche,
+# Endpunkt, ein Aufruf von Hand). Bis 3.2.9 lief er auch bei UDP und sendete
+# status/mode, /interval und /enabled retained. Dieselbe Lesart wie der
+# Waechter in check.pl: nur "1" ist UDP; ist die Konfiguration nicht lesbar,
+# geht es weiter wie bisher.
+{
+    my $c = Config::Simple->new($cfgfile);
+    if ($c && skalar($c->param("BASE.UDP_ENABLE")) eq '1') {
+        LOGINF "Der Uebertragungsweg steht auf UDP - der MQTT-Listener wird nicht gebraucht und beendet sich.";
+        LOGEND "Beendet (Weg UDP).";
+        exit 0;
+    }
+}
+
 # C6: der zuletzt angenommene Befehl je Art (Wert, Zeit) - fuer "gleicher Wert
 # binnen 60 s" (Entscheidung 19, X-7).
 my %zuletzt = ();

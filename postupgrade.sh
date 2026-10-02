@@ -60,6 +60,31 @@ fi
 
 # Restart the MQTT command listener with the new version
 LISTENER=$ARGV5/bin/plugins/$ARGV3/mqtt_listener.pl
+# c1: die Konfiguration, aus der der Uebertragungsweg gelesen wird - die
+# zurueckgespielte, denn dieser Teil laeuft nach dem Zurueckspielen.
+WS_CFG=$ARGV5/config/plugins/$ARGV3/wifi_scanner.cfg
+
+# ---------------------------------------------------------------------------
+# c1 (02.10.2026): Steht der Uebertragungsweg auf UDP?
+#
+# Nur der Wert 1 fuer UDP_ENABLE im Abschnitt [BASE] zaehlt - dieselbe Lesart
+# wie der Waechter in check.pl ("// 0") und die Oberflaeche
+# (ws_cfg(..., '0') === '1'). Fehlt die Datei oder ist sie nicht lesbar, gilt
+# MQTT, und der Listener startet wie bisher. Bis 3.2.9 fragte diese Stelle den
+# Weg gar nicht: bei UDP startete der Listener trotzdem und sendete
+# status/mode, /interval und /enabled retained - genau die Themen, die der
+# Wechsel auf UDP abraeumt. Die mitgelieferte Vorgabe steht auf UDP.
+# ---------------------------------------------------------------------------
+ws_weg_udp() {
+    [ -r "$1" ] || return 1
+    ws_udp=$(awk '
+        /^[ \t]*\[/ { im_base = ($0 ~ /^[ \t]*\[BASE\][ \t\r]*$/); next }
+        im_base && /^[ \t]*UDP_ENABLE[ \t]*=/ {
+            w = $0; sub(/^[^=]*=/, "", w); gsub(/[ \t\r"]/, "", w); v = w
+        }
+        END { print v }' "$1" 2>/dev/null)
+    [ "$ws_udp" = "1" ]
+}
 
 # Gehoert diese Prozessnummer unserem Listener?
 #
@@ -112,7 +137,12 @@ if [ -f "$LISTENER" ]; then
             kill -9 "$P" 2>/dev/null
         fi
     done
-    nohup perl "$LISTENER" > /dev/null 2>&1 &
+    # c1: der alte wird in jedem Fall angehalten (oben), ein neuer nur bei MQTT.
+    if ws_weg_udp "$WS_CFG"; then
+        echo "<INFO> MQTT-Listener nicht gestartet: der Uebertragungsweg steht auf UDP."
+    else
+        nohup perl "$LISTENER" > /dev/null 2>&1 &
+    fi
 fi
 
 # ---------- Die Marke faellt HIER, nach dem Start ----------

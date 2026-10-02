@@ -67,6 +67,30 @@ MARKE=$LBHOMEDIR/data/plugins/$PLUGINFOLDER.upgrade_laeuft
 # I4: die gemeinsame Startsperre mit dem Waechter in check.pl, ebenfalls
 # neben dem Datenordner.
 SPERRE=$LBHOMEDIR/data/plugins/$PLUGINFOLDER.listener_start.lock
+# c1: die Konfiguration, aus der der Uebertragungsweg gelesen wird.
+WS_CFG=$LBHOMEDIR/config/plugins/$PLUGINFOLDER/wifi_scanner.cfg
+
+# ---------------------------------------------------------------------------
+# c1 (02.10.2026): Steht der Uebertragungsweg auf UDP?
+#
+# Nur der Wert 1 fuer UDP_ENABLE im Abschnitt [BASE] zaehlt - dieselbe Lesart
+# wie der Waechter in check.pl ("// 0") und die Oberflaeche
+# (ws_cfg(..., '0') === '1'). Fehlt die Datei oder ist sie nicht lesbar, gilt
+# MQTT, und der Listener startet wie bisher. Bis 3.2.9 fragte diese Stelle den
+# Weg gar nicht: bei UDP startete der Listener trotzdem und sendete
+# status/mode, /interval und /enabled retained - genau die Themen, die der
+# Wechsel auf UDP abraeumt. Die mitgelieferte Vorgabe steht auf UDP.
+# ---------------------------------------------------------------------------
+ws_weg_udp() {
+    [ -r "$1" ] || return 1
+    ws_udp=$(awk '
+        /^[ \t]*\[/ { im_base = ($0 ~ /^[ \t]*\[BASE\][ \t\r]*$/); next }
+        im_base && /^[ \t]*UDP_ENABLE[ \t]*=/ {
+            w = $0; sub(/^[^=]*=/, "", w); gsub(/[ \t\r"]/, "", w); v = w
+        }
+        END { print v }' "$1" 2>/dev/null)
+    [ "$ws_udp" = "1" ]
+}
 
 # ---------------------------------------------------------------------------
 # Gehoert diese Prozessnummer unserem Listener?
@@ -149,6 +173,10 @@ if [ -f "$LISTENER" ]; then
         # startete diese Datei den Listener mit der mitgelieferten
         # Vorgabe-Konfiguration - ohne Personen, ohne Merkwort.
         echo "<INFO> Start uebersprungen: eine Aktualisierung dieses Plugins laeuft."
+        exit 0
+    fi
+    if ws_weg_udp "$WS_CFG"; then
+        echo "<INFO> Kein Start: der Uebertragungsweg steht auf UDP - der MQTT-Listener wird nur bei MQTT gebraucht."
         exit 0
     fi
     # Laeuft schon einer? Beim Systemstart sollte das nicht vorkommen - aber

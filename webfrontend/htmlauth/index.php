@@ -725,6 +725,10 @@ if (isset($_SERVER['REQUEST_METHOD'])
         } else {
             $ws_fehler[] = sprintf(ws_t('T.NICHT_GEFUNDEN'), 'check.pl', ws_e($bin));
         }
+    } elseif ($ws_a === 'restart' && ws_cfg($ws_cfg, 'BASE.UDP_ENABLE', '0') === '1') {
+        /* c1 (02.10.2026): bei UDP wird der Listener nicht gebraucht und nicht
+         * gestartet (bis 3.2.9 startete dieser Knopf ihn trotzdem). */
+        $ws_hinweise[] = ws_t('TEST.M_RESTART_UDP');
     } elseif ($ws_a === 'restart') {
         $ws_pid = ws_listener_restart();
         if ($ws_pid) {
@@ -1364,6 +1368,70 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 
 <div class="sm-step"><b><?= ws_e(ws_t('LOX.S4_TITEL')) ?></b><br>
 <?= ws_t('LOX.S4_TEXT') ?>
+</div>
+
+<?php
+/* X-8 (Nachzug 02.10.2026, bestand_x/NACHZUG_0210.md): die Baustein-Liste zum
+ * Nachbauen. Die Eingaenge sind genau die Befehle der Vorlage VI_wifiscanner.xml -
+ * ws_themen() fuehrt dieselben Themen in derselben Reihenfolge wie ws_vorlage().
+ * Danach die Logik nach Regel A4: UND/ODER mit hoechstens zwei Eingaengen, eine
+ * Quelle je Eingang; mehr als zwei Personen werden ueber eine ODER-Kette
+ * zusammengefuehrt. Die Nummern rechnet diese Seite, die Texte stehen in der
+ * Sprachdatei (Muster: Abfahrtsassistent). */
+$ws_bz = array();   // Zeilen: Typ, Name, Parameter, Verbinden - jeweils HTML
+$ws_bp = array();   // Nummern der Personeneingaenge
+$ws_bok = 0;        // Nummer des Eingangs wifi_ng_status_ok
+foreach (ws_themen($ws_cfg) as $ws_th) {
+    $ws_bz[] = array(ws_t('LOX.B_EINGANG'), ws_e(str_replace('/', '_', $ws_th[0])),
+        sprintf(ws_t('LOX.B_P_THEMA'), '<span class="sm-mono">' . ws_e($ws_th[0]) . '</span>',
+                ws_e($ws_th[1]), ws_e($ws_th[2])), '&mdash;');
+    if (strpos($ws_th[0], '/status/') === false) { $ws_bp[] = count($ws_bz); }
+    if ($ws_th[0] === 'wifi_ng/status/ok') { $ws_bok = count($ws_bz); }
+}
+if (!$ws_bp) {
+    /* Noch keine Person angelegt: ein Platzhalter, damit die Kette lesbar bleibt. */
+    array_unshift($ws_bz, array(ws_t('LOX.B_EINGANG'), ws_e('wifi_ng_<Name>'), ws_t('LOX.B_P_KEINE_PERSON'), '&mdash;'));
+    $ws_bp = array(1);
+    $ws_bok++;
+}
+$ws_bn = function ($n) use (&$ws_bz) { return '#' . (int) $n . ' (' . $ws_bz[$n - 1][1] . ')'; };
+$ws_bq = $ws_bp[0];
+for ($ws_bi = 1; $ws_bi < count($ws_bp); $ws_bi++) {
+    $ws_bz[] = array(ws_e(ws_t('LOX.B_ODER')), ws_e(sprintf(ws_t('LOX.B_N_ODER'), $ws_bi + 1)), '&mdash;',
+                     sprintf(ws_t('LOX.B_V_ZWEI'), $ws_bn($ws_bq), $ws_bn($ws_bp[$ws_bi])));
+    $ws_bq = count($ws_bz);
+}
+$ws_bz[] = array(ws_e(ws_t('LOX.B_TAUS')), ws_e(ws_t('LOX.B_N_ZUHAUSE')), ws_t('LOX.B_P_TAUS'),
+                 sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bq)));
+$ws_bzh = count($ws_bz);
+$ws_bz[] = array(ws_e(ws_t('LOX.B_SCHWELLE')), ws_e(ws_t('LOX.B_N_MISST')), ws_t('LOX.B_P_MISST'),
+                 sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bok)));
+$ws_bm = count($ws_bz);
+$ws_bz[] = array(ws_e(ws_t('LOX.B_NICHT')), ws_e(ws_t('LOX.B_N_NIEMAND')), '&mdash;',
+                 sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bzh)));
+$ws_bnie = count($ws_bz);
+$ws_bz[] = array(ws_e(ws_t('LOX.B_UND')), ws_e(ws_t('LOX.B_N_ALLEWEG')), '&mdash;',
+                 sprintf(ws_t('LOX.B_V_ZWEI'), $ws_bn($ws_bnie), $ws_bn($ws_bm)));
+$ws_bweg = count($ws_bz);
+$ws_bz[] = array(ws_e(ws_t('LOX.B_NICHT')), ws_e(ws_t('LOX.B_N_GESTOERT')), '&mdash;',
+                 sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bm)));
+$ws_bst = count($ws_bz);
+$ws_bz[] = array(ws_e(ws_t('LOX.B_MELDUNG')), ws_e(ws_t('LOX.B_N_MELDUNG')), ws_t('LOX.B_P_MELDUNG'),
+                 sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bst)));
+?>
+<div class="sm-step"><b><?= ws_e(ws_t('LOX.H_BAUSTEINE')) ?></b><br>
+<?= ws_t('LOX.BAUSTEINE_TEXT') ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th>#</th><th><?= ws_e(ws_t('LOX.T_BAUSTEIN')) ?></th><th><?= ws_e(ws_t('LOX.T_NAME')) ?></th>
+    <th><?= ws_e(ws_t('LOX.T_PARAMETER')) ?></th><th><?= ws_e(ws_t('LOX.T_VERBINDEN')) ?></th></tr>
+<?php foreach ($ws_bz as $ws_bi => $ws_bzeile) { ?>
+<tr><td><?= $ws_bi + 1 ?></td><td><?= $ws_bzeile[0] ?></td><td><span class="sm-mono"><?= $ws_bzeile[1] ?></span></td>
+    <td><?= $ws_bzeile[2] ?></td><td><?= $ws_bzeile[3] ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-hilfe"><?php printf(ws_t('LOX.BAUSTEINE_ERLAEUTERUNG'), '#' . $ws_bweg, '#' . $ws_bzh, '#' . $ws_bst); ?></div>
 </div>
 
 <div class="sm-step"><b><?= ws_e(ws_t('LOX.S5_TITEL')) ?></b><br>
