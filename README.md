@@ -9,6 +9,16 @@ Holland](https://github.com/Gagi2k/LoxBerry-Plugin-WifiScanner) (Apache
 License 2.0). Herkunft und die vollständige Liste der Änderungen stehen in
 [NOTICE](NOTICE).
 
+## Neu in 3.2.11
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Statusübersicht über den Reitern** als Tabelle: periodischer Scan, Zeitplan, MQTT-Listener (mit PID),
+  Weg zu Loxone, Zahl der Personen. Dieselben Werte standen bisher als eine Zeile in einem blauen
+  Hinweiskasten; die Warnungen darunter bleiben.
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Umstieg auf 3.0.0 — bitte vor dem Update lesen
 
 > **Diese Fassung heißt anders und wird deshalb nicht als Update angeboten.**

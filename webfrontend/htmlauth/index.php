@@ -1034,13 +1034,22 @@ function ws_person_zustand(array $z, $name, $frisch)
 <div class="sm-warnung"><?= $ws_hw ?></div>
 <?php } ?>
 
-<div class="sm-alert sm-info">
-<?php echo ws_e(ws_t('KOPF.SCAN')); ?>: <b><?= $ws_ein ? ws_e(ws_t('ALLG.EIN')) : ws_e(ws_t('ALLG.AUS')) ?></b><?php if ($ws_ein) { ?>, <?php printf(ws_t('KOPF.ALLE_MINUTEN'), '<b>' . ws_e(ws_cfg($ws_cfg, 'BASE.CRON', '3')) . '</b>'); ?><?php } ?>
-· <?php echo ws_e(ws_t('KOPF.ZEITPLAN')); ?>: <?= $ws_cron !== '' ? ws_e($ws_cron) : '<b>' . ws_e(ws_t('KOPF.KEINE_VERKNUEPFUNG')) . '</b>' ?>
-· <?php echo ws_e(ws_t('KOPF.LISTENER')); ?>: <?= $ws_pid ? ws_e(ws_t('ALLG.LAEUFT')) : '<b>' . ws_e(ws_t('ALLG.LAEUFT_NICHT')) . '</b>' ?>
-· <?php echo ws_e(ws_t('KOPF.WEG')); ?>: <b><?= $ws_udp ? 'UDP' : 'MQTT' ?></b>
-· <?php echo ws_e(ws_t('KOPF.PERSONEN')); ?>: <b><?= count($ws_users) ?></b>
-</div>
+<?php /* Kopf (Entscheidung Nr. 43, seit 3.2.11): Statusuebersicht ueber den
+   Reitern, immer sichtbar. Bis 3.2.10 stand dasselbe als Fliesszeile in einem
+   Meldungskasten. Nur Werte, die oben schon gelesen sind. */ ?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?= ws_e(ws_t('KOPF.EIGENSCHAFT')) ?></th><th><?= ws_e(ws_t('KOPF.WERT')) ?></th></tr>
+<tr><td><?= ws_e(ws_t('KOPF.SCAN')) ?></td>
+    <td><b><?= $ws_ein ? ws_e(ws_t('ALLG.EIN')) : ws_e(ws_t('ALLG.AUS')) ?></b><?php if ($ws_ein) { ?>, <?php printf(ws_t('KOPF.ALLE_MINUTEN'), '<b>' . ws_e(ws_cfg($ws_cfg, 'BASE.CRON', '3')) . '</b>'); ?><?php } ?></td></tr>
+<tr><td><?= ws_e(ws_t('KOPF.ZEITPLAN')) ?></td>
+    <td><?= $ws_cron !== '' ? ws_e($ws_cron) : '<b>' . ws_e(ws_t('KOPF.KEINE_VERKNUEPFUNG')) . '</b>' ?></td></tr>
+<tr><td><?= ws_e(ws_t('KOPF.LISTENER')) ?></td>
+    <td><?= $ws_pid ? ws_e(ws_t('ALLG.LAEUFT')) . ' (PID ' . (int) $ws_pid . ')' : '<b>' . ws_e(ws_t('ALLG.LAEUFT_NICHT')) . '</b>' ?></td></tr>
+<tr><td><?= ws_e(ws_t('KOPF.WEG')) ?></td>
+    <td><b><?= $ws_udp ? 'UDP' : 'MQTT' ?></b></td></tr>
+<tr><td><?= ws_e(ws_t('KOPF.PERSONEN')) ?></td>
+    <td><b><?= count($ws_users) ?></b></td></tr>
+</table>
 
 <?php
 /* Der Listener wird nur bei MQTT gebraucht. Bis 3.1.11 stand "laeuft nicht"
@@ -1071,6 +1080,8 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $ws_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= ws_t('KOPF.WAS_IST_DAS') ?></div>
+
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= ws_e(ws_t('LEGENDE.LESEN')) ?></span>
 <span><i class="sm-punkt sm-b-technik"></i> <?= ws_e(ws_t('LEGENDE.TECHNIK')) ?></span>
