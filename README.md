@@ -9,6 +9,18 @@ Holland](https://github.com/Gagi2k/LoxBerry-Plugin-WifiScanner) (Apache
 License 2.0). Herkunft und die vollständige Liste der Änderungen stehen in
 [NOTICE](NOTICE).
 
+## Neu in 3.2.13
+
+Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und
+verlinkt die Projektdatei.
+
+* Unter der Baustein-Liste steht das Bild der Seite „WiFi-Scanner-NG“ aus dem
+  [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt); das Bild liegt im Plugin,
+  nachgeladen wird nichts. Config kürzt lange Bausteinnamen, die vollen Namen stehen in der Tabelle.
+  Das Musterprojekt zeigt eine Person („Beispiel“); die Liste im Reiter rechnet mit den angelegten
+  Personen.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 3.2.12
 
 Baustein-Liste in der Schreibweise des Leitungswerkzeugs.
@@ -140,6 +152,10 @@ Der Reiter *Einbindung in Loxone* führt eine **Baustein-Liste** zum Nachbauen: 
 Eingänge der Vorlage, eine ODER-Kette über die Personen (je ODER höchstens zwei
 Eingänge), eine Ausschaltverzögerung, „Alle weg (gemessen)“ nur bei `status/ok` = 1
 und eine Meldung, wenn die Suche nicht mehr misst.
+
+Die Bausteine dieser Liste stehen fertig verbunden auf der Seite „WiFi-Scanner-NG“ im
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt), einer gemeinsamen
+Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
 ## Steuerung per MQTT aus Loxone
 

@@ -1018,6 +1018,10 @@ function ws_person_zustand(array $z, $name, $frisch)
     padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
 /* Eigene Ergaenzung (Durchgang 02.10.2026, X-2): ein beanstandetes Feld. */
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 </style>
 <div class="sm-wrap">
 
@@ -1443,6 +1447,11 @@ $ws_bz[] = array(ws_e(ws_t('LOX.B_MELDUNG')), ws_e(ws_t('LOX.B_N_MELDUNG')), ws_
 </table>
 </div>
 <div class="sm-hilfe"><?php printf(ws_t('LOX.BAUSTEINE_ERLAEUTERUNG'), '#' . $ws_bweg, '#' . $ws_bzh, '#' . $ws_bst); ?></div>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= ws_e(ws_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= ws_e(ws_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<div class="sm-hilfe"><?= ws_t('LOX.MUSTERPROJEKT') ?></div>
 </div>
 
 <div class="sm-step"><b><?= ws_e(ws_t('LOX.S5_TITEL')) ?></b><br>
