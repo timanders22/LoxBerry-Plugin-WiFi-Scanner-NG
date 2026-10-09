@@ -1405,7 +1405,7 @@ if (!$ws_bp) {
     $ws_bp = array(1);
     $ws_bok++;
 }
-$ws_bn = function ($n) use (&$ws_bz) { return '#' . (int) $n . ' (' . $ws_bz[$n - 1][1] . ')'; };
+$ws_bn = function ($n) use (&$ws_bz) { return $ws_bz[$n - 1][1] . ' (#' . (int) $n . ')'; };
 $ws_bq = $ws_bp[0];
 for ($ws_bi = 1; $ws_bi < count($ws_bp); $ws_bi++) {
     $ws_bz[] = array(ws_e(ws_t('LOX.B_ODER')), ws_e(sprintf(ws_t('LOX.B_N_ODER'), $ws_bi + 1)), '&mdash;',
