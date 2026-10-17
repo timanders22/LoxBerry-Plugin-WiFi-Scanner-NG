@@ -758,6 +758,21 @@ if (isset($_SERVER['REQUEST_METHOD'])
     exit;
 }
 
+/* ---------------- Steuervorlage (seit 3.2.14) ----------------
+ * Virtueller Ausgang "WiFi-Scanner-NG Steuerung" (ws_vorlage_steuerung()). Die Datei
+ * traegt das Merkwort; der Wachposten oben hat einen POST ohne gueltiges
+ * Formularmerkmal schon entwaffnet - wie beim Knopf darueber. */
+if (isset($_SERVER['REQUEST_METHOD'])
+        && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_steuerung'])) {
+    list($ws_vname, $ws_vinhalt) = ws_vorlage_steuerung();
+    header('Content-Type: application/x-download');
+    header('Content-Disposition: attachment; filename="' . $ws_vname . '"');
+    header('Content-Length: ' . strlen($ws_vinhalt));
+    header('Cache-Control: no-store');
+    echo $ws_vinhalt;
+    exit;
+}
+
 /* ---------------- Einstellungen sichern ----------------
  *
  * Ausgegeben wird die VOLLE Konfiguration - samt Merkwort. Ohne es stuenden
@@ -1022,6 +1037,11 @@ function ws_person_zustand(array $z, $name, $frisch)
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Welle Bild 15 (3.2.14): Abschnitt, Schritte und Hinweise der Baustein-Liste (wie Docker NG 1.3.16). */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 </style>
 <div class="sm-wrap">
 
@@ -1364,6 +1384,7 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array('selftest' => '1'), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_SELFTEST')) ?></td></tr>
 </table>
 </div>
+<div class="sm-hilfe"><?= ws_t('LOX.S6_VORLAGE') ?></div>
 <?= ws_t('LOX.E_SUCHTEXT_HINWEIS') ?>
 <div class="sm-breit">
 <table class="sm-tbl">
@@ -1386,67 +1407,151 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 </div>
 
 <?php
-/* X-8 (Nachzug 02.10.2026, bestand_x/NACHZUG_0210.md): die Baustein-Liste zum
- * Nachbauen. Die Eingaenge sind genau die Befehle der Vorlage VI_wifiscanner.xml -
- * ws_themen() fuehrt dieselben Themen in derselben Reihenfolge wie ws_vorlage().
- * Danach die Logik nach Regel A4: UND/ODER mit hoechstens zwei Eingaengen, eine
- * Quelle je Eingang; mehr als zwei Personen werden ueber eine ODER-Kette
- * zusammengefuehrt. Die Nummern rechnet diese Seite, die Texte stehen in der
- * Sprachdatei (Muster: Abfahrtsassistent). */
-$ws_bz = array();   // Zeilen: Typ, Name, Parameter, Verbinden - jeweils HTML
-$ws_bp = array();   // Nummern der Personeneingaenge
-$ws_bok = 0;        // Nummer des Eingangs wifi_ng_status_ok
-foreach (ws_themen($ws_cfg) as $ws_th) {
-    $ws_bz[] = array(ws_t('LOX.B_EINGANG'), ws_e(str_replace('/', '_', $ws_th[0])),
-        sprintf(ws_t('LOX.B_P_THEMA'), '<span class="sm-mono">' . ws_e($ws_th[0]) . '</span>',
-                ws_e($ws_th[1]), ws_e($ws_th[2])), '&mdash;');
-    if (strpos($ws_th[0], '/status/') === false) { $ws_bp[] = count($ws_bz); }
-    if ($ws_th[0] === 'wifi_ng/status/ok') { $ws_bok = count($ws_bz); }
+/* Welle Bild 15 (3.2.14; Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum leicht
+ * uebernehmen koennen; Entwurf Welle 15 wf, Entscheidungen 1-14 wie empfohlen): die Seite "WiFi-Scanner-NG" aus
+ * dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und mit leitungen_setzen.py verbunden
+ * (Musterprojekt/baustein_listen.txt, Abschnitt "WiFi-Scanner-NG", 25 Zeilen; bei einer Person "Beispiel"
+ * wortgleich). Ueberschrift, Kasten "So uebernehmen Sie diese Seite", Tabelle, Hinweise, Bild, Link.
+ *
+ * Die Nummern rechnet diese Seite wie seit 3.2.10 aus den angelegten Personen: zuerst je Person ein Eingang,
+ * dann die sieben Zustandsthemen in der Reihenfolge von ws_themen()/ws_vorlage(). wifi_ng_status_ts und
+ * wifi_ng_status_listener behalten ihre Nummer, stehen aber nicht in der Tabelle - die Seite braucht sie nicht
+ * (bei einer Person: "Nummern 6 und 8 frei" wie im Musterprojekt). Mehrere Personen: ODER-Kette dahinter
+ * (Regel A4, je ODER zwei Eingaenge); dann verschieben sich die Nummern, die Namen bleiben.
+ * Bis 3.2.13 standen hier 14 Zeilen (bei einer Person); die Meldung hing direkt an "WLAN-Suche gestoert" -
+ * jetzt ueber ODER (mit dem Lebenszeichen "WLAN-Suche steht") und 300 s Einschaltverzoegerung (Entscheidung 4).
+ * Zellen maskiert (ws_e); Verbindungen in Werkzeugform "Ausgang von <Name> (#n)". Schritte und Hinweise roh. */
+$ws_bt = function ($s) { return ws_e(ws_t('LOX.' . $s)); };
+$ws_bz = array();      // Zeilen: Nr, Typ, Name, Parameter, Verbinden (HTML)
+$ws_bnm = array();     // Nummer => Name (HTML)
+$ws_bp = array();      // Nummern der Personeneingaenge
+$ws_bs = array();      // Zustandsthema => Nummer
+$ws_bnr = 0;
+foreach ($ws_users as $ws_bu) {
+    if ($ws_bu['name'] === '') { continue; }
+    $ws_bnr++;
+    $ws_bnm[$ws_bnr] = ws_e('wifi_ng_' . ws_topic_name($ws_bu['name']));
+    $ws_bz[] = array($ws_bnr, $ws_bt('B_EINGANG'), $ws_bnm[$ws_bnr],
+                     ws_e(sprintf(ws_t('LOX.B_P_PERSON'), $ws_bu['name'])), '&mdash;');
+    $ws_bp[] = $ws_bnr;
 }
 if (!$ws_bp) {
     /* Noch keine Person angelegt: ein Platzhalter, damit die Kette lesbar bleibt. */
-    array_unshift($ws_bz, array(ws_t('LOX.B_EINGANG'), ws_e('wifi_ng_<Name>'), ws_t('LOX.B_P_KEINE_PERSON'), '&mdash;'));
-    $ws_bp = array(1);
-    $ws_bok++;
+    $ws_bnr++;
+    $ws_bnm[$ws_bnr] = ws_e('wifi_ng_<Name>');
+    $ws_bz[] = array($ws_bnr, $ws_bt('B_EINGANG'), $ws_bnm[$ws_bnr], $ws_bt('B_P_KEINE_PERSON'), '&mdash;');
+    $ws_bp[] = $ws_bnr;
 }
-$ws_bn = function ($n) use (&$ws_bz) { return $ws_bz[$n - 1][1] . ' (#' . (int) $n . ')'; };
+foreach (array('mode' => 'B_P_MODE', 'interval' => 'B_P_INTERVAL', 'enabled' => 'B_P_ENABLED', 'ok' => 'B_P_OK',
+               'ts' => '', 'zaehler' => 'B_P_ZAEHLER', 'listener' => '') as $ws_bk => $ws_bpk) {
+    $ws_bnr++;
+    $ws_bs[$ws_bk] = $ws_bnr;
+    $ws_bnm[$ws_bnr] = ws_e('wifi_ng_status_' . $ws_bk);
+    if ($ws_bpk !== '') {
+        $ws_bz[] = array($ws_bnr, $ws_bt('B_EINGANG'), $ws_bnm[$ws_bnr], $ws_bt($ws_bpk), '&mdash;');
+    }
+}
+$ws_bn = function ($n) use (&$ws_bnm) { return $ws_bnm[$n] . ' (#' . (int) $n . ')'; };
 $ws_bq = $ws_bp[0];
 for ($ws_bi = 1; $ws_bi < count($ws_bp); $ws_bi++) {
-    $ws_bz[] = array(ws_e(ws_t('LOX.B_ODER')), ws_e(sprintf(ws_t('LOX.B_N_ODER'), $ws_bi + 1)), '&mdash;',
+    $ws_bnr++;
+    $ws_bnm[$ws_bnr] = ws_e(sprintf(ws_t('LOX.B_N_ODER'), $ws_bi + 1));
+    $ws_bz[] = array($ws_bnr, $ws_bt('B_ODER'), $ws_bnm[$ws_bnr], '&mdash;',
                      sprintf(ws_t('LOX.B_V_ZWEI'), $ws_bn($ws_bq), $ws_bn($ws_bp[$ws_bi])));
-    $ws_bq = count($ws_bz);
+    $ws_bq = $ws_bnr;
 }
-$ws_bz[] = array(ws_e(ws_t('LOX.B_TAUS')), ws_e(ws_t('LOX.B_N_ZUHAUSE')), ws_t('LOX.B_P_TAUS'),
-                 sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bq)));
-$ws_bzh = count($ws_bz);
-$ws_bz[] = array(ws_e(ws_t('LOX.B_SCHWELLE')), ws_e(ws_t('LOX.B_N_MISST')), ws_t('LOX.B_P_MISST'),
-                 sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bok)));
-$ws_bm = count($ws_bz);
-$ws_bz[] = array(ws_e(ws_t('LOX.B_NICHT')), ws_e(ws_t('LOX.B_N_NIEMAND')), '&mdash;',
-                 sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bzh)));
-$ws_bnie = count($ws_bz);
-$ws_bz[] = array(ws_e(ws_t('LOX.B_UND')), ws_e(ws_t('LOX.B_N_ALLEWEG')), '&mdash;',
-                 sprintf(ws_t('LOX.B_V_ZWEI'), $ws_bn($ws_bnie), $ws_bn($ws_bm)));
-$ws_bweg = count($ws_bz);
-$ws_bz[] = array(ws_e(ws_t('LOX.B_NICHT')), ws_e(ws_t('LOX.B_N_GESTOERT')), '&mdash;',
-                 sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bm)));
-$ws_bst = count($ws_bz);
-$ws_bz[] = array(ws_e(ws_t('LOX.B_MELDUNG')), ws_e(ws_t('LOX.B_N_MELDUNG')), ws_t('LOX.B_P_MELDUNG'),
-                 sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bst)));
+/* Die uebrigen Bausteine: Kennung => Name (HTML). Nummern zuerst, weil die Meldung (#14 bei einer Person)
+ * auf die spaetere Einschaltverzoegerung zeigt. */
+$ws_bkn = array(
+    'zuhause' => $ws_bt('B_N_ZUHAUSE'), 'misst' => $ws_bt('B_N_MISST'), 'niemand' => $ws_bt('B_N_NIEMAND'),
+    'weg' => $ws_bt('B_N_ALLEWEG'), 'gest' => $ws_bt('B_N_GESTOERT'), 'meld' => $ws_bt('B_N_MELDUNG'),
+    'konst' => $ws_bt('B_N_KONSTANTE'), 'valid' => $ws_bt('B_N_STEHT'), 'gesamt' => $ws_bt('B_N_GESAMT'),
+    'best' => $ws_bt('B_N_BESTAETIGT'), 'st1' => $ws_bt('B_N_SUCHE'), 'st2' => $ws_bt('B_N_WER'),
+    't1' => $ws_bt('B_N_JETZT'), 'q1' => 'WIFI_SUCHE_JETZT', 't2' => $ws_bt('B_N_EIN'), 'q2' => 'WIFI_SUCHE_EIN',
+    't3' => $ws_bt('B_N_AUS'), 'q3' => 'WIFI_SUCHE_AUS', 'q4' => 'WIFI_TAKT_SCHNELL',
+);
+$ws_b = array();
+foreach ($ws_bkn as $ws_bk => $ws_bx) {
+    $ws_b[$ws_bk] = ++$ws_bnr;
+    $ws_bnm[$ws_bnr] = $ws_bx;
+}
+$ws_bs_ok = $ws_bs['ok'];
+foreach (array(
+    array('zuhause', 'B_TAUS', $ws_bt('B_P_TAUS'), sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bq))),
+    array('misst', 'B_SCHWELLE', $ws_bt('B_P_MISST'), sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_bs_ok))),
+    array('niemand', 'B_NICHT', '&mdash;', sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['zuhause']))),
+    array('weg', 'B_UND', '&mdash;', sprintf(ws_t('LOX.B_V_ZWEI'), $ws_bn($ws_b['niemand']), $ws_bn($ws_b['misst']))),
+    array('gest', 'B_NICHT', '&mdash;', sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['misst']))),
+    array('meld', 'B_MELDUNG', $ws_bt('B_P_MELDUNG'), sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['best']))),
+    array('konst', 'B_KONSTANTE', $ws_bt('B_P_KONSTANTE'), '&mdash;'),
+    array('valid', 'B_VALID', $ws_bt('B_P_STEHT'), sprintf(ws_t('LOX.B_V_VALID'), $ws_bn($ws_bs['zaehler']), $ws_bn($ws_b['konst']))),
+    array('gesamt', 'B_ODER', $ws_bt('B_P_GESAMT'), sprintf(ws_t('LOX.B_V_ZWEI_E'), $ws_bn($ws_b['gest']), $ws_bn($ws_b['valid']))),
+    array('best', 'B_EVZ', $ws_bt('B_P_EVZ'), sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['gesamt']))),
+    array('st1', 'B_STATUS', $ws_bt('B_P_SUCHE'), sprintf(ws_t('LOX.B_V_STATUS1'), $ws_bn($ws_bs_ok), $ws_bn($ws_b['valid']), $ws_bn($ws_bs['enabled']), $ws_bn($ws_bs['interval']), $ws_bn($ws_bs['mode']), $ws_bn($ws_bs['zaehler']))),
+    array('st2', 'B_STATUS', $ws_bt('B_P_WER'), sprintf(ws_t('LOX.B_V_STATUS2'), $ws_bn($ws_bq), $ws_bn($ws_b['zuhause']), $ws_bn($ws_b['misst']))),
+    array('t1', 'B_TASTE', $ws_bt('B_P_JETZT'), '&mdash;'),
+    array('q1', 'B_VQ', ws_e(sprintf(ws_t('LOX.B_P_Q_JETZT'), '#' . $ws_bp[0], '#' . $ws_bs_ok)),
+          sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['t1']))),
+    array('t2', 'B_TASTE', $ws_bt('B_P_EIN'), '&mdash;'),
+    array('q2', 'B_VQ', ws_e(sprintf(ws_t('LOX.B_P_Q_EIN'), '#' . $ws_bs['enabled'])),
+          sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['t2']))),
+    array('t3', 'B_TASTE', $ws_bt('B_P_AUS'), '&mdash;'),
+    array('q3', 'B_VQ', ws_e(sprintf(ws_t('LOX.B_P_Q_AUS'), '#' . $ws_bs['enabled'])),
+          sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['t3']))),
+    array('q4', 'B_VQ', $ws_bt('B_P_Q_SCHNELL'), sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['weg']))),
+) as $ws_bx) {
+    $ws_bz[] = array($ws_b[$ws_bx[0]], $ws_bt($ws_bx[1]), $ws_bnm[$ws_b[$ws_bx[0]]], $ws_bx[2], $ws_bx[3]);
+}
+$ws_bh = function ($k) use (&$ws_b) { return '#' . (int) $ws_b[$k]; };
+$ws_bi_ = function ($k) use (&$ws_b, &$ws_bnm) { return '<i>' . $ws_bnm[$ws_b[$k]] . '</i>'; };
+/* Schritte und Hinweise: je Text ein ausgeschriebener sprintf-Aufruf (sprachplatzhalter_pruefen.py zaehlt
+ * die Argumente nur so); Texte ohne Platzhalter direkt. Ausgabe roh (Auszeichnung erlaubt). */
+$ws_bschritte = array(
+    ws_t('LOX.SCHRITT1'), ws_t('LOX.SCHRITT2'), ws_t('LOX.SCHRITT3'), ws_t('LOX.SCHRITT4'),
+    sprintf(ws_t('LOX.SCHRITT5'), $ws_bi_('t1'), $ws_bi_('t2'), $ws_bi_('t3')),
+    sprintf(ws_t('LOX.SCHRITT6'), $ws_bh('zuhause'), $ws_bh('st2')),
+    sprintf(ws_t('LOX.SCHRITT7'), $ws_bi_('meld'), $ws_bh('best')),
+    sprintf(ws_t('LOX.SCHRITT8'), $ws_bh('valid'), $ws_bh('st1')),
+    sprintf(ws_t('LOX.SCHRITT9'), $ws_bi_('st1'), $ws_bi_('t1'), $ws_bi_('t3'), $ws_bi_('t2')),
+);
+$ws_bhinweise = array(
+    sprintf(ws_t('LOX.H_WEG'), $ws_bh('weg'), $ws_bh('zuhause'), $ws_bh('weg'), $ws_bh('zuhause')),
+    sprintf(ws_t('LOX.H_STEHT'), $ws_bh('valid'), $ws_bi_('st1')),
+    sprintf(ws_t('LOX.H_EN'), $ws_bh('valid')),
+    sprintf(ws_t('LOX.H_MELDUNG'), $ws_bh('meld'), $ws_bh('best'), $ws_bh('valid'), $ws_bh('gesamt')),
+    sprintf(ws_t('LOX.H_STATUS'), $ws_bh('st1')),
+    sprintf(ws_t('LOX.H_STEUERUNG'), $ws_bh('q1'), $ws_bh('q4')),
+    sprintf(ws_t('LOX.H_SCHNELL'), $ws_bh('q4')),
+    sprintf(ws_t('LOX.H_REGEL'), $ws_bh('zuhause')),
+    ws_t('LOX.H_GRENZE'),
+);
+?>
 ?>
 <div class="sm-step"><b><?= ws_e(ws_t('LOX.H_BAUSTEINE')) ?></b><br>
 <?= ws_t('LOX.BAUSTEINE_TEXT') ?>
+<h4 class="sm-h4"><?= ws_e(ws_t('LOX.ABSCHNITT_H')) ?></h4>
+<div class="sm-hinweis"><b><?= ws_e(ws_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($ws_bschritte as $ws_bx) { ?>
+<li><?= $ws_bx ?></li>
+<?php } ?>
+</ol></div>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th>#</th><th><?= ws_e(ws_t('LOX.T_BAUSTEIN')) ?></th><th><?= ws_e(ws_t('LOX.T_NAME')) ?></th>
     <th><?= ws_e(ws_t('LOX.T_PARAMETER')) ?></th><th><?= ws_e(ws_t('LOX.T_VERBINDEN')) ?></th></tr>
-<?php foreach ($ws_bz as $ws_bi => $ws_bzeile) { ?>
-<tr><td><?= $ws_bi + 1 ?></td><td><?= $ws_bzeile[0] ?></td><td><span class="sm-mono"><?= $ws_bzeile[1] ?></span></td>
-    <td><?= $ws_bzeile[2] ?></td><td><?= $ws_bzeile[3] ?></td></tr>
+<?php foreach ($ws_bz as $ws_bzeile) { ?>
+<tr><td><?= (int) $ws_bzeile[0] ?></td><td><?= $ws_bzeile[1] ?></td><td><span class="sm-mono"><?= $ws_bzeile[2] ?></span></td>
+    <td><?= $ws_bzeile[3] ?></td><td><?= $ws_bzeile[4] ?></td></tr>
 <?php } ?>
 </table>
 </div>
-<div class="sm-hilfe"><?php printf(ws_t('LOX.BAUSTEINE_ERLAEUTERUNG'), '#' . $ws_bweg, '#' . $ws_bzh, '#' . $ws_bst); ?></div>
+<div class="sm-warnung"><b><?= ws_e(ws_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($ws_bhinweise as $ws_bx) { ?>
+<li><?= $ws_bx ?></li>
+<?php } ?>
+</ul></div>
 <figure class="sm-bild">
 <img src="einbindung_loxone.png" alt="<?= ws_e(ws_t('LOX.BILD_ALT')) ?>" loading="lazy">
 <figcaption><?= ws_e(ws_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
@@ -1468,6 +1573,11 @@ $ws_bz[] = array(ws_e(ws_t('LOX.B_MELDUNG')), ws_e(ws_t('LOX.B_N_MELDUNG')), ws_
     <input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="1"><?= ws_e(ws_t('ALLG.K_VORLAGE')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_steuerung" value="1"><?= ws_e(ws_t('LOX.K_STEUERVORLAGE')) ?></button>
   </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
@@ -1658,16 +1768,24 @@ $ws_add(ws_t('TEST.P_SUCHTEXT'), ($ws_kollision || $ws_ohne_trenner) ? 0 : 1,
     : ($ws_ohne_trenner ? sprintf(ws_t('TEST.P_SUCHTEXT_TRENNER'), ws_e(implode(', ', $ws_ohne_trenner)))
                         : sprintf(ws_t('TEST.P_SUCHTEXT_OK'), count($ws_felder_n))));
 
-// 7. Ist die Vorlage wohlgeformt?
+// 7. Sind die Vorlagen wohlgeformt? Seit 3.2.14 beide: die Eingaenge
+//    (ws_vorlage()) und die Steuerbefehle (ws_vorlage_steuerung()).
 list($ws_vn, $ws_vi) = ws_vorlage();
+list($ws_vsn, $ws_vs) = ws_vorlage_steuerung();
+$ws_xml_kaputt = array();
 $ws_alt_xml = libxml_use_internal_errors(true);
-$ws_xml_ok = simplexml_load_string($ws_vi) !== false;
+if (function_exists('simplexml_load_string')) {
+    foreach (array($ws_vn => $ws_vi, $ws_vsn => $ws_vs) as $ws_vdn => $ws_vdi) {
+        if (simplexml_load_string($ws_vdi) === false) { $ws_xml_kaputt[] = $ws_vdn; }
+    }
+}
 libxml_clear_errors();
 libxml_use_internal_errors($ws_alt_xml);
-$ws_add(ws_t('TEST.P_VORLAGE'), function_exists('simplexml_load_string') ? ($ws_xml_ok ? 1 : 0) : 2,
+$ws_add(ws_t('TEST.P_VORLAGE'), function_exists('simplexml_load_string') ? ($ws_xml_kaputt ? 0 : 1) : 2,
     function_exists('simplexml_load_string')
-        ? ($ws_xml_ok ? sprintf(ws_t('TEST.P_VORLAGE_OK'), substr_count($ws_vi, '<VirtualInHttpCmd'))
-                      : ws_t('TEST.P_VORLAGE_KAPUTT'))
+        ? ($ws_xml_kaputt ? sprintf(ws_t('TEST.P_VORLAGE_KAPUTT'), ws_e(implode(', ', $ws_xml_kaputt)))
+                          : sprintf(ws_t('TEST.P_VORLAGE_OK'), substr_count($ws_vi, '<VirtualInHttpCmd'),
+                                    substr_count($ws_vs, '<VirtualOutCmd')))
         : ws_t('TEST.P_VORLAGE_KEIN_PARSER'));
 
 // 8. Arbeitet der Dienst noch?

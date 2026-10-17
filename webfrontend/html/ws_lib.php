@@ -1753,6 +1753,70 @@ function ws_vorlage_zeile($titel, $bemerkung, $min, $max)
 }
 
 /**
+ * Die Vorlage fuer einen VIRTUELLEN AUSGANG "WiFi-Scanner-NG Steuerung" (seit 3.2.14).
+ *
+ * Entwurf Welle 15 (Musterprojekt), Entscheidung 7: die vier Befehle, die der
+ * Endpunkt seit 3.1.12 kann, als Importdatei - bis 3.2.13 standen nur die
+ * Adressen im Reiter (Schritt "Ohne Gateway"), und Adresse, Befehle und
+ * Merkwort mussten von Hand abgetippt werden. Gesteuert wird ueber HTTP an den
+ * eigenen Endpunkt (Entscheidung 6), nicht ueber MQTT: der Endpunkt antwortet mit
+ * Code und Grund und braucht weder Listener noch Gateway.
+ *
+ * Aufbau wie ein Original-Export aus Loxone Config 17.1 (templateType 3, Reihenfolge
+ * der Felder wie VQ_DASHBOARD_STEUERUNG.xml). Sprachregel 13.10.2026 (Regeln/07):
+ * Titel der Vorlage und der Befehle FEST deutsch, nur die Kommentare kommen aus der
+ * Sprachdatei (hoechstens 40 Zeichen je Befehl). Die Pfade entstehen in
+ * ws_endpunkt_pfad() - dieselbe Quelle wie die Adresstabelle im Reiter.
+ *
+ * WIFI_TAKT_SCHNELL: Ein = Takt 1 Minute, Aus = der beim Erzeugen eingestellte
+ * Takt; ist er 1 (oder keiner der erlaubten), dann 3 (die Vorgabe) - sonst
+ * schaltete "Aus" nichts zurueck. Die Datei traegt das Merkwort.
+ */
+function ws_vorlage_steuerung()
+{
+    $cfg = ws_config_read(false);
+    $crlf = "\r\n";
+    $x = function ($s) {
+        return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
+    };
+    /* Der Rechnername, unter dem der Bediener die Seite offen hat - so findet
+     * ihn auch der Miniserver am ehesten; sonst der Name des Rechners. */
+    $host = isset($_SERVER['HTTP_HOST'])
+          ? preg_replace('/[^A-Za-z0-9.:\[\]-]/', '', (string) $_SERVER['HTTP_HOST']) : '';
+    if ($host === '') {
+        $host = preg_replace('/[^A-Za-z0-9.-]/', '', (string) gethostname());
+    }
+    if ($host === '') {
+        $host = 'loxberry';
+    }
+    $takt = trim((string) ws_cfg($cfg, 'BASE.CRON', '3'));
+    if ($takt === '1' || !in_array($takt, ws_takte(), true)) {
+        $takt = '3';
+    }
+    $befehle = array(
+        array('WIFI_SUCHE_JETZT', ws_t('VORLAGE.K_JETZT'), array('aktion' => 'scan'), null),
+        array('WIFI_SUCHE_EIN', ws_t('VORLAGE.K_EIN'), array('aktion' => 'enable', 'wert' => '1'), null),
+        array('WIFI_SUCHE_AUS', ws_t('VORLAGE.K_AUS'), array('aktion' => 'enable', 'wert' => '0'), null),
+        array('WIFI_TAKT_SCHNELL', sprintf(ws_t('VORLAGE.K_SCHNELL'), $takt),
+              array('aktion' => 'interval', 'wert' => '1'), array('aktion' => 'interval', 'wert' => $takt)),
+    );
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut HintText="" Title="WiFi-Scanner-NG Steuerung" '
+        . 'Comment="' . $x(sprintf(ws_t('VORLAGE.K_STEUERUNG'), date('d.m.Y'))) . '" '
+        . 'Address="' . $x('http://' . $host) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
+    foreach ($befehle as $b) {
+        $o .= "\t" . '<VirtualOutCmd Title="' . $x($b[0]) . '" Comment="' . $x(ws_kurz($b[1])) . '" '
+            . 'CmdOnMethod="GET" CmdOffMethod="GET" '
+            . 'CmdOn="' . $x(ws_endpunkt_pfad($b[2], $cfg)) . '" CmdOnHTTP="" CmdOnPost="" '
+            . 'CmdOff="' . ($b[3] === null ? '' : $x(ws_endpunkt_pfad($b[3], $cfg))) . '" CmdOffHTTP="" '
+            . 'CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
+    }
+    $o .= '</VirtualOut>' . $crlf;
+    return array('VQ_wifiscanner_steuern.xml', $o);
+}
+
+/**
  * Die Themen, die das Plugin veroeffentlicht - EINE Quelle.
  *
  * Oberflaeche, Testseite und die Pruefzeile "stimmt die Themenliste mit dem

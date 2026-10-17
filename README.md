@@ -9,6 +9,35 @@ Holland](https://github.com/Gagi2k/LoxBerry-Plugin-WifiScanner) (Apache
 License 2.0). Herkunft und die vollständige Liste der Änderungen stehen in
 [NOTICE](NOTICE).
 
+## Neu in 3.2.14
+
+Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) mit einem Bild und
+Schritt-für-Schritt-Anleitung; neue Vorlage für die Steuerung aus Loxone.
+
+* **Reiter Einbindung in Loxone:** Baustein-Liste mit 25 statt 14 Zeilen (bei einer Person). Neu sind
+  die Eingänge Suchweg, Takt, regelmäßige Suche und Laufzähler, ein Lebenszeichen über den Laufzähler
+  (Analogwertvalidierung „WLAN-Suche steht“ – meldet, wenn LoxBerry, Zeitplan oder MQTT-Gateway stehen;
+  bisher blieb `status/ok` dann auf 1), die Störmeldung erst nach 5 Minuten (ODER und
+  Einschaltverzögerung), zwei Status-Bausteine („WLAN-Suche“, „Wer ist zu Hause“) und drei Tasten mit
+  vier Befehlen. Darüber ein Kasten „So übernehmen Sie diese Seite“, darunter Hinweise und das neue Bild
+  der Seite „WiFi-Scanner-NG“. Die Eingänge `wifi_ng_status_ts` und `_listener` behalten ihre Nummer,
+  stehen aber nicht mehr in der Liste (die Seite braucht sie nicht).
+* **Neue Vorlage „WiFi-Scanner-NG Steuerung“:** Knopf „Vorlage der Steuerbefehle erzeugen“ im Reiter
+  Einbindung in Loxone, Datei `VQ_wifiscanner_steuern.xml` für einen Virtuellen Ausgang mit vier Befehlen
+  an den eigenen Endpunkt (mit Merkwort): `WIFI_SUCHE_JETZT` (Sofort-Suche), `WIFI_SUCHE_EIN` und
+  `WIFI_SUCHE_AUS` (regelmäßige Suche), `WIFI_TAKT_SCHNELL` (Ein: Takt 1 Minute, Aus: der beim Erzeugen
+  eingestellte Takt, bei 1 Minute 3). Die Befehle kannte der Endpunkt schon; neu ist die fertige
+  Importdatei. Befehlstitel fest deutsch, nur die Kommentare übersetzt. Die Prüfzeile im Reiter Test
+  („Sind die erzeugten Loxone-Vorlagen wohlgeformt?“) prüft beide Dateien.
+* **Wer die Seite schon gebaut hat:** die Leitung von „WLAN-Suche gestört“ zur Benachrichtigung entfernen –
+  die Benachrichtigung hängt jetzt an „WLAN-Störung bestätigt“; an der Analogwertvalidierung den Haken bei
+  „En“ entfernen. Die Eingangsvorlage nicht neu importieren: die neuen Eingänge stehen schon darin.
+* **Textberichtigung #14:** Die Benachrichtigung „WLAN-Anwesenheit gestört“ ist keine Option mehr, sondern
+  Teil der Seite; ihr Text sagt jetzt, was folgt und wo man nachsieht: „WLAN-Anwesenheit misst nicht – ‚Alle
+  weg‘ schaltet nicht mehr; in der App den Status ‚WLAN-Suche‘ lesen“.
+* Kein Such- oder Sendeverhalten geändert. Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät und nicht
+  in Loxone Config angesehen.
+
 ## Neu in 3.2.13
 
 Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und
@@ -148,10 +177,12 @@ Bei UDP läuft der MQTT-Listener nicht: weder Systemstart noch Installation,
 Endpunkt oder der Knopf im Reiter *Test* starten ihn, und der Wechsel auf UDP
 hält ihn an. Der Wechsel zurück auf MQTT startet ihn wieder.
 
-Der Reiter *Einbindung in Loxone* führt eine **Baustein-Liste** zum Nachbauen: die
-Eingänge der Vorlage, eine ODER-Kette über die Personen (je ODER höchstens zwei
-Eingänge), eine Ausschaltverzögerung, „Alle weg (gemessen)“ nur bei `status/ok` = 1
-und eine Meldung, wenn die Suche nicht mehr misst.
+Der Reiter *Einbindung in Loxone* führt eine **Baustein-Liste** zum Nachbauen, mit einem
+Kasten „So übernehmen Sie diese Seite“: die Eingänge der Vorlage, eine ODER-Kette über die
+Personen (je ODER höchstens zwei Eingänge), eine Ausschaltverzögerung, „Alle weg (gemessen)“
+nur bei `status/ok` = 1, ein Lebenszeichen über den Laufzähler (Analogwertvalidierung), eine
+Meldung erst nach 5 Minuten Störung, zwei Status-Bausteine und drei Tasten für die Steuerung
+über die Steuervorlage.
 
 Die Bausteine dieser Liste stehen fertig verbunden auf der Seite „WiFi-Scanner-NG“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt), einer gemeinsamen
@@ -173,6 +204,11 @@ Der aktuelle Stand wird retained nach `wifi_ng/status/#` veröffentlicht
 sind. Befehle bitte **nicht retained** senden — ein zurückbehaltener Befehl
 wird verworfen. Derselbe Wert binnen 60 Sekunden ändert nichts; ein
 unveränderter Modus stößt keinen Suchlauf an.
+
+Ohne MQTT geht die Steuerung über den eigenen Endpunkt: der Knopf *Vorlage der
+Steuerbefehle erzeugen* im Reiter *Einbindung in Loxone* liefert `VQ_wifiscanner_steuern.xml`
+für einen Virtuellen Ausgang (Sofort-Suche, regelmäßige Suche ein/aus, schneller Takt; Adresse
+und Merkwort sind eingetragen). Nach „Neues Merkwort erzeugen“ die Vorlage neu erzeugen.
 
 ## Zeitplan
 
