@@ -1,0 +1,15 @@
+#!/bin/sh
+#
+# WiFi-Scanner-NG - Waechter der Befehlsbruecke und des Haus-Abnehmers, jede Minute. NEU IN 3.2.15 (Gruppe 14, E9).
+#
+# Die Bruecke (bin/befehlsbruecke.sh, Stammfassung Werkzeuge/gemeinsam/) ersetzt den eigenen MQTT-Listener. Ihr Waechter
+# prueft selbst, ob sie laufen SOLL (Haken "Befehle ueber MQTT annehmen", Upgrade-Marke, Praefix) und startet hoechstens
+# alle 600 s neu (BB_WACHE_BREMSE). Der Haus-Abnehmer (bin/ws_haus.sh, V3) laeuft nur mit dem Haken
+# "Schnellpruefung, wenn die Bluetooth-Anwesenheit geht" und hat dieselbe Bremse.
+# Der Installer legt diese Datei als system/cron/cron.01min/<pluginname> an (hier wifi_ng); die eigenen
+# Zeitplanverweise der Linie heissen wifi_scanner - keine Ueberschneidung.
+BBSH="REPLACELBPBINDIR/befehlsbruecke.sh"
+[ -f "$BBSH" ] && /bin/bash "$BBSH" waechter >/dev/null 2>&1
+HSH="REPLACELBPBINDIR/ws_haus.sh"
+[ -f "$HSH" ] && /bin/bash "$HSH" waechter >/dev/null 2>&1
+exit 0

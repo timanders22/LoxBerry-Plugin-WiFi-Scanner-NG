@@ -22,8 +22,10 @@
  * nichts aus - sie enthaelt keine Anweisung ausserhalb einer Funktion.
  *
  * Die Konfiguration bleibt im Format von Config::Simple
- * (config/wifi_scanner.cfg), damit check.pl und mqtt_listener.pl
- * unveraendert weiterlesen koennen.
+ * (config/wifi_scanner.cfg), damit check.pl unveraendert weiterliest. Den
+ * eigenen MQTT-Listener gibt es seit 3.2.15 nicht mehr (Gruppe 14) - Befehle
+ * nimmt die gemeinsame Befehlsbruecke an (bin/befehlsbruecke.php), die ueber
+ * ws_bb_tun()/ws_steuern() dieselbe Logik benutzt wie der Endpunkt.
  *
  * Eigenes Variablen- und Funktionspraefix "ws_", weil LBWeb::lbheader()
  * SDK-Globale setzt und sonst Namen kollidieren.
@@ -152,9 +154,22 @@ function ws_paths()
     if ($p !== null) {
         return $p;
     }
-    $home = getenv('LBHOMEDIR');
-    if (!$home) {
-        $home = lb_wurzel_ermitteln();
+    /* W16 (Gruppe 14): Anlagenpfade nur, wenn (a) LBHOMEDIR UND LBPPLUGINDIR ausdruecklich gesetzt sind
+     * oder (b) diese Datei wirklich unter <wurzel>/webfrontend/html/plugins/<ordner>/ liegt (realpath-Vergleich,
+     * Gleichstand BLE bl_paths). Bis 3.2.14 genuegte LBHOMEDIR allein - ein ausgepacktes Archiv steuerte dann die
+     * Anlage (Pruefbericht, gemessen). Die Befehlsbruecke (Cron als loxberry, ohne LBPPLUGINDIR) bekommt ueber (b)
+     * die Anlagenpfade. */
+    $ws_env_home = (string) getenv('LBHOMEDIR');
+    $ws_env_dir = (string) getenv('LBPPLUGINDIR');
+    $home = '';
+    if ($ws_env_home !== '' && $ws_env_dir !== '') {
+        $home = $ws_env_home;
+    } else {
+        $ws_kand = $ws_env_home !== '' ? $ws_env_home : lb_wurzel_ermitteln();
+        $ws_soll = $ws_kand !== '' ? realpath($ws_kand . '/webfrontend/html/plugins/' . basename(__DIR__)) : false;
+        if ($ws_soll !== false && realpath(__DIR__) === $ws_soll) {
+            $home = $ws_kand;
+        }
     }
     /* LBPPLUGINDIR ist die Auskunft von LoxBerry selbst und hat Vorrang.
      *
@@ -167,10 +182,7 @@ function ws_paths()
      *
      * Jetzt wird der Ordner aus dem eigenen Ablageort genommen; der feste
      * Name greift nur, wo der ermittelte nachweislich keiner sein kann. */
-    $dir = getenv('LBPPLUGINDIR');
-    if (!$dir) {
-        $dir = basename(__DIR__);
-    }
+    $dir = ($home !== '' && $ws_env_dir !== '') ? $ws_env_dir : basename(__DIR__);
     if ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html'
         || $dir === 'htmlauth' || $dir === 'plugins' || $dir === 'webfrontend') {
         $dir = 'wifi_ng';
@@ -225,7 +237,7 @@ function ws_upgrade_marke()
  * Laeuft gerade eine Aktualisierung dieses Plugins?
  *
  * preupgrade.sh legt die Marke als Erstes an, postupgrade.sh - das letzte
- * Hakenskript dieser Linie - entfernt sie nach dem Start des Listeners.
+ * Hakenskript dieser Linie - entfernt sie an seinem Ende.
  *
  * Aelter als eine Stunde, unlesbar oder kein Zeitpunkt: sie gilt NICHT. Eine
  * abgebrochene Installation darf die Oberflaeche nicht fuer immer stilllegen.
@@ -295,7 +307,7 @@ function ws_config_read($erzeugen = true)
      * die Zweitschrift zurueck und postupgrade.sh die Sicherung. Eine
      * Selbstheilung dazwischen legte nur einen dritten Stand daneben. */
     if (!is_file($file) && $erzeugen && is_file($p['backup']) && !ws_upgrade_laeuft()) {
-        @copy($p['backup'], $file);
+        ws_selbstheilung($p['backup'], $file);   // W17 (Gruppe 14): unteilbar, 0600, Ergebnis geprueft
     }
     if (!is_file($file)) {
         return $out;
@@ -609,7 +621,7 @@ function ws_takte()
     return array('1', '3', '5', '10', '15', '30', '60');
 }
 
-/** Cron-Verknuepfung neu setzen (gleiche Namen wie mqtt_listener.pl). */
+/** Cron-Verknuepfung neu setzen (Name wifi_scanner; bis 3.2.14 auch vom Listener gesetzt). */
 function ws_cron_apply($enabled, $minutes)
 {
     $p = ws_paths();
@@ -635,13 +647,14 @@ function ws_cron_apply($enabled, $minutes)
     }
     $target = $p['bindir'] . '/check.pl';
     $ziel = $p['crondir'] . '/' . $behalten . '/' . $pname;
-    /* "ln -sfn" ersetzt einen bestehenden Verweis unteilbar (es legt daneben
-     * an und benennt um). symlink() allein kann das nicht - es scheitert,
-     * wenn das Ziel schon da ist, weshalb bisher erst geloescht werden
-     * musste. Rueckfall auf den alten Weg, falls ln fehlt. */
-    $aus = array(); $rc = 1;
-    @exec('ln -sfn ' . escapeshellarg($target) . ' ' . escapeshellarg($ziel) . ' 2>/dev/null', $aus, $rc);
-    if ($rc !== 0) {
+    /* Unteilbar ersetzen OHNE Kindprozess (Gruppe 14, 3.4): Verweis daneben anlegen (<ziel>.tmp.<pid>), dann
+     * rename() - genau das tat "ln -sfn" bis 3.2.14 als exec mit Schale. Die Befehlsbruecke ruft diese Funktion
+     * im Dauerprozess; ein Kind erbte dort ihre Pfeifen. run-parts uebergeht den Namen mit Punkten. Rueckfall auf
+     * loeschen und neu anlegen, falls rename scheitert. */
+    $tmp = $ziel . '.tmp.' . getmypid();
+    @unlink($tmp);
+    if (!(@symlink($target, $tmp) && @rename($tmp, $ziel))) {
+        @unlink($tmp);
         @unlink($ziel);
         @symlink($target, $ziel);
     }
@@ -669,147 +682,8 @@ function ws_cron_current()
     return '';
 }
 
-/* ==================================================================
- * Der MQTT-Listener
- * ================================================================== */
-
-/**
- * Gehoert die PID unserem Listener?
- *
- * /proc/<pid>/cmdline trennt die Argumente mit Nullbytes. Ein Treffer hat
- * GENAU zwei Argumente: argv[0] ist ein perl-Interpreter, argv[1] ist
- * zeichengenau der volle Pfad unseres Skripts. Ein Einmallauf mit
- * zusaetzlichen Argumenten ist damit kein Dienst.
- *
- * Bis 3.2.6 genuegte, dass IRGENDEINES der ersten beiden Argumente der Pfad
- * war - ohne die Frage, WER die Datei in der Hand hat. Gemessen am
- * 18.09.2026 in WSL (Pruefstaende/messe_koeder.sh):
- *   K2  ein Koeder "tail <listenerpfad> -f" - GNU tail vertauscht Option und
- *       Dateiname, der Pfad steht damit in argv[1] - wurde von
- *       ws_listener_running() als Listener gemeldet (Nummer 3079100);
- *   K3  ws_listener_stop() hat ihn daraufhin beendet ("IST TOT").
- * Der Knopf "Dienst neu starten" im Reiter Test beendete also einen fremden
- * Prozess, sobald jemand die Datei mit einem Werkzeug offen hatte.
- *
- * Bei einem Skript mit Shebang setzt der Kern argv[0] auf den INTERPRETER
- * (/usr/bin/perl) und argv[1] auf den Skriptpfad - basename() deckt beide
- * Schreibweisen ab (Klasse-F-Nachmessung vom 18.09.2026, Abschnitt 9).
- *
- * Kein Benutzerfilter: in dieser Linie startet den Listener einmal
- * daemon/daemon als loxberry und einmal postinstall.sh/postupgrade.sh als
- * der Benutzer des Installers. Der Eigentuemer ist hier also nicht EIN
- * fester Wert; ein Filter darauf uebersaehe den eigenen Dienst.
- */
-function ws_ist_listener($pid, $skript)
-{
-    $roh = @file_get_contents('/proc/' . (int) $pid . '/cmdline');
-    if ($roh === false || $roh === '') {
-        return false;
-    }
-    /* Die Befehlszeile endet auf ein Nullbyte - explode() liefert dann ein
-     * leeres letztes Feld. Es gehoert nicht mitgezaehlt. */
-    $args = explode("\0", $roh);
-    if ($args !== array() && end($args) === '') {
-        array_pop($args);
-    }
-    if (count($args) !== 2) {
-        return false;
-    }
-    $interpreter = basename($args[0]);
-    if ($interpreter !== 'perl' && strpos($interpreter, 'perl5') !== 0) {
-        return false;
-    }
-    return ($args[1] === $skript);
-}
-
-/**
- * ALLE laufenden Listener, aufsteigend nach Prozessnummer.
- *
- * Bis 3.2.6 gab es nur ws_listener_running(), das beim ERSTEN Treffer
- * zurueckkam - und ws_listener_stop() beendete deshalb auch nur einen.
- * Gemessen am 18.09.2026 in WSL (Pruefstaende/messe_luecke.sh, Fall D1):
- * "vorher: 2 ... ws_listener_stop() lieferte: 2961129 ... nachher: 1".
- * Zwei Listener auf denselben MQTT-Themen beantworten jeden Befehl doppelt;
- * genau diese Lage entsteht, wenn purge_installation die PID-Datei mit dem
- * Datenordner loescht und ein zweiter Start dazukommt (Regeln/06).
- */
-function ws_listener_alle()
-{
-    $p = ws_paths();
-    $skript = $p['bindir'] . '/mqtt_listener.pl';
-    $gefunden = array();
-    foreach ((array) @scandir('/proc') as $eintrag) {
-        if (ctype_digit((string) $eintrag) && ws_ist_listener((int) $eintrag, $skript)) {
-            $gefunden[] = (int) $eintrag;
-        }
-    }
-    sort($gefunden);
-    return $gefunden;
-}
-
-/**
- * PID des laufenden MQTT-Listeners, 0 wenn keiner laeuft.
- *
- * Bis 2.5 stand hier "pgrep -f mqtt_listener.pl". Das durchsucht die GANZE
- * Befehlszeile jedes Prozesses und trifft damit auch einen Editor, in dem
- * die Datei offen ist, oder ein zweites Exemplar des Plugins (LoxBerry
- * haengt bei einem Namenskonflikt 01, 02 ... an den Ordnernamen an). "ps -C"
- * und "killall" waeren keine Alternative: die vergleichen den comm-Namen,
- * der bei einem Skript mit Shebang "perl" lautet - die finden gar nichts.
- */
-function ws_listener_running()
-{
-    $alle = ws_listener_alle();
-    return $alle ? $alle[0] : 0;
-}
-
-/**
- * Listener beenden - gezielt ueber die Prozessnummern, nicht ueber pkill -f.
- *
- * ALLE eigenen, nicht nur den ersten. Zurueckgegeben wird die niedrigste
- * beendete Nummer (wie bisher), damit die Meldungen im Reiter Test und beim
- * Zurueckspielen unveraendert bleiben.
- */
-function ws_listener_stop()
-{
-    $alle = ws_listener_alle();
-    if (!$alle) {
-        return 0;
-    }
-    foreach ($alle as $pid) {
-        @exec('kill ' . (int) $pid . ' 2>/dev/null');
-    }
-    for ($i = 0; $i < 10 && ws_listener_alle() !== array(); $i++) {
-        usleep(300000);
-    }
-    foreach (ws_listener_alle() as $pid) {
-        @exec('kill -9 ' . (int) $pid . ' 2>/dev/null');
-    }
-    if (ws_listener_alle() !== array()) {
-        usleep(300000);
-    }
-    return $alle[0];
-}
-
-/**
- * Listener neu starten. Erst anhalten, dann warten, dann starten.
- *
- * An drei Stellen wurde das bis 3.1.11 einzeln hingeschrieben, und an einer
- * davon (postinstall.sh) fehlte das Warten - zwei Listener beantworten jeden
- * Befehl doppelt. Jetzt gibt es eine Stelle.
- */
-function ws_listener_restart()
-{
-    $p = ws_paths();
-    $bin = $p['bindir'] . '/mqtt_listener.pl';
-    if (!is_file($bin)) {
-        return 0;
-    }
-    ws_listener_stop();
-    @exec('nohup perl ' . escapeshellarg($bin) . ' > /dev/null 2>&1 &');
-    usleep(800000);
-    return ws_listener_running();
-}
+/* Der Abschnitt "Der MQTT-Listener" (ws_ist_listener, ws_listener_alle, ws_listener_running, ws_listener_stop,
+ * ws_listener_restart) ist mit 3.2.15 entfallen (Gruppe 14, E9) - siehe ws_listener_reste() fuer den Reiter Test. */
 
 /* ==================================================================
  * MQTT-Gateway
@@ -818,9 +692,16 @@ function ws_listener_restart()
 /** MQTT-Zugangsdaten des Gateways (nur zur Anzeige, ohne Kennwort). */
 function ws_mqtt_broker()
 {
+    /* W23 (Gruppe 14): seit LoxBerry 3 steht der Broker in config/system/general.json (Mqtt.Brokerhost, -port);
+     * config/plugins/mqttgateway/mqtt.json gibt es dort nicht. Bis 3.2.14 stand deshalb auf jeder Anlage mit
+     * LoxBerry 3/4 "Gefundener Broker: nicht gefunden" (Pruefbericht, gerendert). Rueckfall mqtt.json (LoxBerry 2). */
+    $i = ws_mqtt_gateway_info();
+    if ($i !== null) {
+        return $i['broker'];
+    }
     $p = ws_paths();
     $f = $p['home'] . '/config/plugins/mqttgateway/mqtt.json';
-    if (!is_file($f)) {
+    if ($p['home'] === '' || !is_file($f)) {
         return '';
     }
     $j = @json_decode((string) @file_get_contents($f), true);
@@ -876,9 +757,13 @@ function ws_mqtt_gateway_info()
     // Der Schluessel heisst Gatewayautostart, NICHT Autostart. Fuenf Plugins
     // haben den falschen Namen benutzt und die Warnung deshalb immer gezeigt.
     $auto = isset($j['Mqtt']['Gatewayautostart']) ? $j['Mqtt']['Gatewayautostart'] : '';
+    // W23 (Gruppe 14): der Broker aus demselben Block - EIN Lesen.
+    $host = isset($j['Mqtt']['Brokerhost']) && is_scalar($j['Mqtt']['Brokerhost']) ? trim((string) $j['Mqtt']['Brokerhost']) : '';
+    $port = isset($j['Mqtt']['Brokerport']) && is_numeric($j['Mqtt']['Brokerport']) ? (int) $j['Mqtt']['Brokerport'] : 1883;
     $info = array(
         'autostart' => in_array((string) $auto, array('1', 'true'), true),
         'fassung'   => isset($j['Mqtt']['Gatewayversion']) ? (int) $j['Mqtt']['Gatewayversion'] : 0,
+        'broker'    => $host === '' ? '' : $host . ($port !== 1883 ? ':' . $port : ''),
     );
     return $info;
 }
@@ -1264,10 +1149,18 @@ function ws_vorgaben()
         'BASE.ENABLED'         => '0',
         'BASE.ACTIVE_SCAN'     => '1',
         'BASE.USE_CACHE'       => '1',
-        'BASE.UDP_ENABLE'      => '1',
+        // E2 (Gruppe 14): eine Neuinstallation sendet ueber MQTT (bis 3.2.14: 1 = UDP). Ein Update behaelt den
+        // Wert der Anlage; die Oberflaeche las den fehlenden Schluessel schon immer als 0.
+        'BASE.UDP_ENABLE'      => '0',
         'BASE.PING_CMD'        => '0',
         'BASE.TOKEN'           => '',
         'BASE.LOGMAX'          => '500',
+        // Gruppe 14 (2.7): alle ab Werk aus. ENDPUNKT_EIN beim Update nach dem Merkwort (ws_uebergang_wert).
+        'BASE.ENDPUNKT_EIN'            => '0',
+        'BASE.BEFEHLE_MQTT_EIN'        => '0',
+        'BASE.BEFEHLE_EINGREIFEND_EIN' => '0',
+        'BASE.HAUS_ABNEHMER'           => '0',
+        'BASE.WECKPAKET'               => '0',
     );
 }
 
@@ -1343,7 +1236,9 @@ function ws_wert_pruefen($schluessel, $wert)
     }
     $w = (string) $wert;
     $schalter = array('BASE.FRITZBOX_ENABLE', 'BASE.ENABLED', 'BASE.ACTIVE_SCAN',
-                      'BASE.USE_CACHE', 'BASE.UDP_ENABLE', 'BASE.PING_CMD');
+                      'BASE.USE_CACHE', 'BASE.UDP_ENABLE', 'BASE.PING_CMD',
+                      'BASE.ENDPUNKT_EIN', 'BASE.BEFEHLE_MQTT_EIN', 'BASE.BEFEHLE_EINGREIFEND_EIN',
+                      'BASE.HAUS_ABNEHMER', 'BASE.WECKPAKET');
     if (in_array($schluessel, $schalter, true)) {
         return preg_match('/^[01]$/', $w) === 1 ? '' : 'nur 0 oder 1';
     }
@@ -1380,6 +1275,12 @@ function ws_wert_pruefen($schluessel, $wert)
         if (strpbrk($w, '"\'') !== false) {
             return 'Anfuehrungszeichen sind hier nicht moeglich';
         }
+        /* E1 (Gruppe 14): Config::Simple liest mit parse_line('\s*,\s*', 0, ...) - ein Backslash ist dort
+         * Fluchtzeichen, Leerraum am Komma faellt weg. check.pl laese "Ab\cd" als "Abcd" (401). Ein Komma
+         * allein uebersteht join(',') in check.pl. */
+        if (strpos($w, '\\') !== false || preg_match('/\s,|,\s/', $w) === 1) {
+            return 'Backslash und Leerzeichen am Komma sind hier nicht moeglich (check.pl liest sie veraendert)';
+        }
         return '';
     }
     if (preg_match('/^USER[0-9]+[.]NAME$/', $schluessel) === 1) {
@@ -1391,6 +1292,10 @@ function ws_wert_pruefen($schluessel, $wert)
          * "O'Brien" beim Speichern still "OBrien"). */
         if (strpbrk($w, '"\'') !== false) {
             return 'Anfuehrungszeichen sind im Namen nicht moeglich';
+        }
+        // E10 (Gruppe 14, F1): wifi_ng/status/... und wifi_ng/befehl/... gehoeren dem Plugin und der Bruecke.
+        if (ws_name_reserviert($w)) {
+            return 'Thema darf nicht status oder befehl heissen';
         }
         // O4: aus dem Namen muss ein MQTT-Thema entstehen (nicht "???" oder "李雷").
         return ws_topic_name($w) !== '' ? '' : 'ergibt kein MQTT-Thema';
@@ -1525,10 +1430,23 @@ function ws_sicherung_lesen($roh)
      * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     $fehlend = array();
+    $ergaenzt = array();
     foreach (array_keys(ws_vorgaben()) as $fk) {
         if (!array_key_exists($fk, $daten)) {
+            /* Gruppe 14 (2.7): eine Sicherung aus einer aelteren Fassung kennt die neuen Schluessel nicht - fuer
+             * sie gilt dieselbe Uebergangsregel wie im Update (ENDPUNKT_EIN nach Merkwort, UDP_ENABLE 1, die
+             * uebrigen 0), mit Hinweis statt Beanstandung (Muster Heimkino hk_sicherung_lesen). Fehlt ein
+             * ALTER Schluessel, bleibt es eine Beanstandung. */
+            if (in_array($fk, ws_neue_schluessel(), true)) {
+                $neu[$fk] = ws_uebergang_wert($fk, $neu);
+                $ergaenzt[] = $fk . '=' . $neu[$fk];
+                continue;
+            }
             $fehlend[] = $fk;
         }
+    }
+    if ($ergaenzt) {
+        $hinweise[] = sprintf(ws_t('EINST.SICH_ERGAENZT'), ws_e(implode(', ', $ergaenzt)));
     }
     if ($fehlend) {
         $mangel[] = sprintf(ws_t('EINST.SICH_FEHLEND'), count($fehlend),
@@ -1685,45 +1603,9 @@ function ws_sicherung_inhalt()
     return array($kopf, $aus);
 }
 
-/** Vorlage der Gateway-Eingaenge nach dem Heimkino-Kunstgriff (12.08.2026):
- *  VirtualInHttp mit Dummy-Adresse http://localhost und Abfragezyklus 604800 s,
- *  nur damit Loxone die richtig benannten Eingaenge anlegt - die Werte kommen
- *  vom MQTT-Gateway. Format wie Original-Export aus Loxone Config 17.1.
- *
- *  Seit 3.1.12 sind die Zustandsthemen mit dabei. Ohne sie musste man genau
- *  die Eingaenge von Hand anlegen, die beantworten, ob die Anwesenheit
- *  ueberhaupt noch gemessen wird.
- */
-function ws_vorlage()
-{
-    $cfg = ws_config_read(false);
-    $crlf = "\r\n";
-    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp HintText="" Title="WifiScanner Anwesenheit" Comment="Erzeugt vom LoxBerry-Plugin WifiScanner-NG (' . date('d.m.Y') . '). Werte kommen vom MQTT-Gateway - Abo wifi_ng/# noetig." Address="http://localhost" PollingTime="604800">' . $crlf;
-    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
-    foreach (ws_users($cfg) as $u) {
-        if ($u['name'] === '') { continue; }
-        $o .= ws_vorlage_zeile('wifi_ng_' . ws_topic_name($u['name']),
-              ws_kurz(sprintf(ws_t('VORLAGE.K_PERSON'), $u['name'])), 0, 1);
-    }
-    /* Die Zustandsthemen. MinVal traegt hier ausdruecklich die Fehlwerte:
-     * status_ok meldet -1 fuer "noch nie gelaufen", und mit MinVal="0"
-     * zeigte Loxone dafuer eine 0 - also "Stoerung", was etwas anderes ist.
-     *
-     * O11 (Durchgang 02.10.2026): die Kommentare kommen aus der Sprachdatei
-     * und sind hoechstens 40 Zeichen lang (Regeln/07); bis 3.2.9 standen drei
-     * mit 45 bis 58 Zeichen fest auf Deutsch hier. status/zaehler hat einen
-     * Eingang bekommen. C8: der Modus kennt -1 fuer "keine Suche". */
-    $o .= ws_vorlage_zeile('wifi_ng_status_mode',     ws_kurz(ws_t('VORLAGE.K_MODE')), -1, 2);
-    $o .= ws_vorlage_zeile('wifi_ng_status_interval', ws_kurz(ws_t('VORLAGE.K_INTERVAL')), 0, 60);
-    $o .= ws_vorlage_zeile('wifi_ng_status_enabled',  ws_kurz(ws_t('VORLAGE.K_ENABLED')), 0, 1);
-    $o .= ws_vorlage_zeile('wifi_ng_status_ok',       ws_kurz(ws_t('VORLAGE.K_OK')), -1, 1);
-    $o .= ws_vorlage_zeile('wifi_ng_status_ts',       ws_kurz(ws_t('VORLAGE.K_TS')), 0, 2147483647);
-    $o .= ws_vorlage_zeile('wifi_ng_status_zaehler',  ws_kurz(ws_t('VORLAGE.K_ZAEHLER')), 0, 999);
-    $o .= ws_vorlage_zeile('wifi_ng_status_listener', ws_kurz(ws_t('VORLAGE.K_LISTENER')), 0, 1);
-    $o .= '</VirtualInHttp>' . $crlf;
-    return array('VI_wifiscanner.xml', $o);
-}
+/* ws_vorlage() (VirtualInHttp "WifiScanner Anwesenheit" an http://localhost, PollingTime 604800) ist mit 3.2.15
+ * entfallen (E3, Regeln/07 R2_078): die Werte kommen ueber das MQTT-Gateway in einfache Virtuelle Eingaenge - die
+ * Namen stehen in der Namenstabelle (ws_mqtt_namen()). W24 erledigt sich damit. */
 
 /** O11: ein Kommentar der Vorlage hat hoechstens 40 Zeichen (Regeln/07). Ein
  *  laengerer - etwa mit einem langen Personennamen - wird gekuerzt und endet
@@ -1736,20 +1618,6 @@ function ws_kurz($s, $max = 40)
     }
     preg_match('/^.{0,' . ($max - 1) . '}/us', $s, $m);
     return (isset($m[0]) ? $m[0] : '') . '…';
-}
-
-/** Eine Befehlszeile der Vorlage. Entsteht an EINER Stelle. */
-function ws_vorlage_zeile($titel, $bemerkung, $min, $max)
-{
-    $x = function ($s) {
-        return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
-    };
-    return "\t" . '<VirtualInHttpCmd Title="' . $x($titel) . '" '
-         . 'Comment="' . $x($bemerkung) . '" Check=" " '
-         . 'Signed="' . ($min < 0 ? 'true' : 'false') . '" Analog="true" '
-         . 'SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" '
-         . 'DefVal="0" MinVal="' . (int) $min . '" MaxVal="' . (int) $max . '" '
-         . 'Unit="&lt;v&gt;" HintText=""/>' . "\r\n";
 }
 
 /**
@@ -1851,36 +1719,807 @@ function ws_themen(?array $cfg = null)
     $t = array();
     foreach (ws_users($cfg) as $u) {
         if ($u['name'] === '') { continue; }
-        // Anwesenheit ist ein Zustand.
+        // Anwesenheit ist ein Zustand. Seit 3.2.15 -1 = keine Aussage (E5).
         $t[] = array('wifi_ng/' . ws_topic_name($u['name']),
-                     ws_t('LOX.ANWESENHEIT') . ' ' . $u['name'], '0 / 1', true);
+                     ws_t('LOX.ANWESENHEIT') . ' ' . $u['name'], '-1 / 0 / 1', true);
     }
-    // Zustaende - retained.
+    // Zustaende - retained (seit 3.2.15 aus check.pl und mqtt_abraeumen.pl --status).
     $t[] = array('wifi_ng/status/mode',     ws_t('LOX.T_MODE'),     ws_t('LOX.V_MODE'), true);
     $t[] = array('wifi_ng/status/interval', ws_t('LOX.T_INTERVAL'), ws_t('ALLG.MINUTEN'), true);
     $t[] = array('wifi_ng/status/enabled',  ws_t('LOX.T_ENABLED'),  '0 / 1', true);
-    // Das Lebenszeichen - nie retained.
-    $t[] = array('wifi_ng/status/ok',       ws_t('LOX.T_OK'),       '-1 / 0 / 1', false);
+    // Das Lebenszeichen - nie retained. status/listener ist mit dem Listener entfallen (E9).
+    $t[] = array('wifi_ng/status/ok',       ws_t('LOX.T_OK'),       '0 / 1', false);
     $t[] = array('wifi_ng/status/ts',       ws_t('LOX.T_TS'),       ws_t('LOX.V_TS'), false);
     $t[] = array('wifi_ng/status/zaehler',  ws_t('LOX.T_ZAEHLER'),  '0 ... 999', false);
-    $t[] = array('wifi_ng/status/listener', ws_t('LOX.T_LISTENER'), '0 / 1', false);
     return $t;
 }
 
 /** Die Themen des Lebenszeichens - EINE Quelle fuer Sendecode und Anzeige. */
 function ws_lebenszeichen()
 {
-    return array('wifi_ng/status/ok', 'wifi_ng/status/ts',
-                 'wifi_ng/status/zaehler', 'wifi_ng/status/listener');
+    return array('wifi_ng/status/ok', 'wifi_ng/status/ts', 'wifi_ng/status/zaehler');
 }
 
-/** Die Befehle, die der Listener entgegennimmt - EINE Quelle. */
-function ws_befehle()
+/* ==================================================================
+ * Gruppe 14 (3.2.15): MQTT-Gateway, Befehlsbruecke, HTTP-Endpunkt hinter endpunkt_ein, V1/V3/V4
+ *
+ * Entwurf Musterprojekt/entwurf_gruppe14_ws.txt (2.4, 2.7, 3.3-3.10, 7), ENTSCHEIDUNGEN_GRUPPE14_WIFI.md E1-E20.
+ * Der eigene MQTT-Listener (bin/mqtt_listener.pl) ist entfallen; seine Funktionen ws_ist_listener(),
+ * ws_listener_alle(), ws_listener_running(), ws_listener_stop(), ws_listener_restart() und ws_befehle() mit ihm.
+ * ================================================================== */
+
+/** W30: der Hilfeverweis im Kopf - EINE Stelle (bis 3.2.14 zweimal die Startseite des Wikis). */
+function ws_hilfe_url()
 {
-    return array(
-        array('wifi_ng/cmd/scan',     ws_t('LOX.N_SCAN'),              ws_t('LOX.W_SCAN')),
-        array('wifi_ng/cmd/mode',     '0/both, 1/fritzbox, 2/ping',    ws_t('LOX.W_MODE')),
-        array('wifi_ng/cmd/interval', implode(', ', ws_takte()),       ws_t('LOX.W_INTERVAL')),
-        array('wifi_ng/cmd/enable',   '0 ' . ws_t('ALLG.ODER') . ' 1', ws_t('LOX.W_ENABLE')),
+    return 'https://github.com/timanders22/LoxBerry-Plugin-WiFi-Scanner-NG';
+}
+
+/** Die mit 3.2.15 neuen Schluessel (2.7) - und UDP_ENABLE, dessen Vorgabe sich aendert. */
+function ws_neue_schluessel()
+{
+    return array('BASE.ENDPUNKT_EIN', 'BASE.BEFEHLE_MQTT_EIN', 'BASE.BEFEHLE_EINGREIFEND_EIN',
+                 'BASE.HAUS_ABNEHMER', 'BASE.WECKPAKET', 'BASE.UDP_ENABLE');
+}
+
+/**
+ * Uebergangswert fuer einen Schluessel, der einer Konfiguration aus einer aelteren Fassung fehlt (Update,
+ * zurueckgespielte Sicherung): ENDPUNKT_EIN = 1, wenn ein gueltiges Merkwort da ist (E6 - der Endpunkt bleibt fuer
+ * bestehende Anlagen erreichbar, jetzt nur mit Merkwort), UDP_ENABLE = 1 (die alte Vorgabe), alle uebrigen 0.
+ */
+function ws_uebergang_wert($schluessel, array $cfg)
+{
+    if ($schluessel === 'BASE.ENDPUNKT_EIN') {
+        return preg_match('/^[0-9a-f]{16,64}$/', ws_token($cfg)) === 1 ? '1' : '0';
+    }
+    return $schluessel === 'BASE.UDP_ENABLE' ? '1' : '0';
+}
+
+/**
+ * E6: nimmt der HTTP-Endpunkt Aufrufe an? EINE Regel fuer Endpunkt, Oberflaeche und Reiter Test: steht
+ * BASE.ENDPUNKT_EIN in der Konfiguration, gilt der Wert; fehlt er (Update von 3.2.14, bevor postupgrade.sh ihn
+ * geschrieben hat), gilt ein gueltiges Merkwort als "an" - dieselbe Regel wie ws_wert_pruefen() fuer TOKEN.
+ */
+function ws_endpunkt_ein(array $cfg)
+{
+    if (array_key_exists('BASE.ENDPUNKT_EIN', $cfg)) {
+        return (string) $cfg['BASE.ENDPUNKT_EIN'] === '1';
+    }
+    return preg_match('/^[0-9a-f]{16,64}$/', ws_token($cfg)) === 1;
+}
+
+/**
+ * Die Modusregel (C8, E7): -1 keine Suche, 0 beides, 1 nur Fritz!Box, 2 nur Scan. Dieselbe Regel steht in Perl
+ * zweimal (check.pl, mqtt_abraeumen.pl --status); ws_modusregel_pruefen() vergleicht.
+ */
+function ws_modus($fritz, $aktiv)
+{
+    $f = (string) $fritz === '1';
+    $a = (string) $aktiv === '1';
+    return ($f && $a) ? 0 : ($f ? 1 : ($a ? 2 : -1));
+}
+
+/** Wo liegt eine Datei unter bin/? Installiert bin/plugins/<ordner>/, im Archiv <wurzel>/bin/. '' = fehlt. */
+function ws_bin_datei($name)
+{
+    $p = ws_paths();
+    foreach (array($p['bindir'] . '/' . $name, dirname(dirname(__DIR__)) . '/bin/' . $name) as $k) {
+        if (@is_file($k)) {
+            return $k;
+        }
+    }
+    return '';
+}
+
+/**
+ * Ein Auftrag ueber bin/ws_auftrag.sh (3.4) - EINE Stelle fuer Endpunkt, Oberflaeche, Befehlsbruecke und V3.
+ * proc_open mit Feld (ohne Schale), Ein-/Ausgaben auf /dev/null, warten nur, bis das Skript zurueckkommt
+ * (Millisekunden): es startet check.pl --auftrag [--mode] bzw. mqtt_abraeumen.pl --status losgeloest und schliesst
+ * vorher alle geerbten Deskriptoren. $art scan|status, $modus ''|both|fritzbox|ping (nur scan). Rueckgabe bool.
+ */
+function ws_auftrag_starten($art, $modus = '')
+{
+    $art = (string) $art;
+    $modus = (string) $modus;
+    if (!in_array($art, array('scan', 'status'), true) || !in_array($modus, array('', 'both', 'fritzbox', 'ping'), true)
+        || ($art === 'status' && $modus !== '')) {
+        return false;
+    }
+    $sh = ws_bin_datei('ws_auftrag.sh');
+    if ($sh === '' || DIRECTORY_SEPARATOR === '\\' || !function_exists('proc_open')) {
+        return false;
+    }
+    $kmd = array('/bin/bash', $sh, $art);
+    if ($modus !== '') {
+        $kmd[] = $modus;
+    }
+    $rohr = array();
+    $pr = @proc_open($kmd, array(0 => array('file', '/dev/null', 'r'), 1 => array('file', '/dev/null', 'w'),
+                                 2 => array('file', '/dev/null', 'w')), $rohr);
+    if (!is_resource($pr)) {
+        return false;
+    }
+    return proc_close($pr) === 0;
+}
+
+/**
+ * EINE Logik fuer die ausloesenden Befehle (3.4): der Aktionsteil des Endpunkts (bis 3.2.14 in html/index.php) - der
+ * Endpunkt gibt die Felder byte-gleich wie bisher aus, die Befehlsbruecke ruft dieselbe Funktion (Quelle 'mqtt').
+ * $aktion scan|enable|interval|mode, $wert der Wert (bei scan der Suchweg fuer --mode: ''|both|fritzbox|ping).
+ * Rueckgabe array(HTTP-Code, Felder) mit OK, AKTION, WERT, UNVERAENDERT, ERR wie bisher. Geaendert gegenueber 3.2.14
+ * nur: nach dem Schreiben status/mode|interval|enabled ueber ws_auftrag_starten('status') statt Listener-Neustart, und
+ * der Suchlauf ueber ws_auftrag_starten('scan') statt exec mit Schale (ERR=AUFTRAG_FEHLT, wenn er nicht startet).
+ */
+function ws_steuern($aktion, $wert, $quelle = 'http')
+{
+    $aktion = (string) $aktion;
+    $wert = (string) $wert;
+    if (ws_upgrade_laeuft()) {
+        return array(503, array('OK' => 0, 'ERR' => 'UPGRADE'));
+    }
+    if ($aktion === 'scan') {
+        if (ws_bin_datei('check.pl') === '') {
+            return array(500, array('OK' => 0, 'ERR' => 'CHECK_FEHLT'));
+        }
+        /* C13: --auftrag - ein Befehl aus Loxone sucht auch bei ausgeschaltetem regelmaessigem Suchen. */
+        if (!ws_auftrag_starten('scan', $wert)) {
+            return array(500, array('OK' => 0, 'ERR' => 'AUFTRAG_FEHLT'));
+        }
+        return array(200, array('OK' => 1, 'AKTION' => 'scan'));
+    }
+    /* Die drei schreibenden Aktionen. Der Wert wird gegen dieselbe Pruefung gehalten wie ein Feld der
+     * Oberflaeche - eine zweite Wahrheit ueber zulaessige Werte gibt es nicht. */
+    $ziel = array('enable' => 'BASE.ENABLED', 'interval' => 'BASE.CRON');
+    if (!isset($ziel[$aktion]) && $aktion !== 'mode') {
+        return array(400, array('OK' => 0, 'ERR' => 'AKTION'));
+    }
+    $cfg = ws_config_read(false);
+    if ($cfg === array()) {
+        return array(500, array('OK' => 0, 'ERR' => 'KEINE_KONFIG'));
+    }
+    $neu = $cfg;
+    if ($aktion === 'mode') {
+        if ($wert === '0') { $neu['BASE.FRITZBOX_ENABLE'] = '1'; $neu['BASE.ACTIVE_SCAN'] = '1'; }
+        elseif ($wert === '1') { $neu['BASE.FRITZBOX_ENABLE'] = '1'; $neu['BASE.ACTIVE_SCAN'] = '0'; }
+        elseif ($wert === '2') { $neu['BASE.FRITZBOX_ENABLE'] = '0'; $neu['BASE.ACTIVE_SCAN'] = '1'; }
+        else { return array(400, array('OK' => 0, 'ERR' => 'WERT')); }
+    } else {
+        if (ws_wert_pruefen($ziel[$aktion], $wert) !== '') {
+            return array(400, array('OK' => 0, 'ERR' => 'WERT'));
+        }
+        $neu[$ziel[$aktion]] = $wert;
+    }
+    /* C6: steht der Wert schon so in der Konfiguration, wird nichts geschrieben - UNVERAENDERT=1. Derselbe Befehl
+     * binnen 60 s tut gar nichts; kommt er spaeter wieder, wird nur der Zeitplan nachgezogen. */
+    $gleich = true;
+    foreach ($neu as $k => $v) {
+        if (!array_key_exists($k, $cfg) || (string) $cfg[$k] !== (string) $v) {
+            $gleich = false;
+            break;
+        }
+    }
+    if ($gleich) {
+        if (!ws_befehl_binnen($aktion, $wert)) {
+            ws_befehl_merken($aktion, $wert);
+            ws_cron_apply(ws_cfg($neu, 'BASE.ENABLED', '0'), ws_cfg($neu, 'BASE.CRON', '3'));
+        }
+        return array(200, array('OK' => 1, 'AKTION' => $aktion, 'WERT' => $wert, 'UNVERAENDERT' => 1));
+    }
+    if (!ws_config_write($neu)) {
+        return array(500, array('OK' => 0, 'ERR' => 'SCHREIBEN'));
+    }
+    ws_befehl_merken($aktion, $wert);
+    ws_cron_apply(ws_cfg($neu, 'BASE.ENABLED', '0'), ws_cfg($neu, 'BASE.CRON', '3'));
+    /* E7: die Zustaende sofort nachziehen (bei UDP sendet --status nichts). Ohne das stuende nach "Suche aus"
+     * status/enabled fuer immer auf 1 - es laeuft ja kein Suchlauf mehr. */
+    ws_auftrag_starten('status');
+    return array(200, array('OK' => 1, 'AKTION' => $aktion, 'WERT' => $wert));
+}
+
+/* ---------------- Befehlsbruecke: die Seite der Linie (Entwurf 3.3-3.5) ---------------- */
+
+/** Einstellungen fuer die Bruecke (ws_config_read() liest jedes Mal - ein Haken wirkt ohne Neustart). Praefix fest. */
+function ws_bb_einstellungen()
+{
+    $c = ws_config_read(false);
+    return array('praefix' => 'wifi_ng',
+                 'annehmen' => ws_cfg($c, 'BASE.BEFEHLE_MQTT_EIN', '0') === '1',
+                 'eingreifend' => ws_cfg($c, 'BASE.BEFEHLE_EINGREIFEND_EIN', '0') === '1',
+                 'mqtt_ein' => true);
+}
+
+/**
+ * Protokoll der Befehlsbruecke (und des Haus-Abnehmers): <logdir>/befehlsbruecke.log, angehaengt unter flock,
+ * "YYYY-MM-DD HH:MM:SS STUFE text", ueber 500 kB auf die letzten 200 Zeilen gekappt (wie log_kappen in check.pl).
+ * Der Reiter Logdateien listet die Datei ueber loglist_html() von selbst (W29). Kein Kennwort.
+ */
+function ws_bb_protokoll($stufe, $text)
+{
+    $p = ws_paths();
+    if ($p['home'] === '' || !is_dir($p['logdir'])) {
+        return;
+    }
+    $f = $p['logdir'] . '/befehlsbruecke.log';
+    $zeile = date('Y-m-d H:i:s') . ' ' . strtoupper((string) $stufe) . ' '
+           . str_replace(array("\r", "\n"), ' ', (string) $text) . "\n";
+    $fh = @fopen($f, 'a+');
+    if ($fh === false) {
+        return;
+    }
+    if (@flock($fh, LOCK_EX)) {
+        $st = @fstat($fh);
+        if ($st && $st['size'] > 500 * 1024) {
+            @fseek($fh, 0);
+            $z = preg_split('/\n/', (string) @stream_get_contents($fh), -1, PREG_SPLIT_NO_EMPTY);
+            @ftruncate($fh, 0);
+            @fseek($fh, 0);
+            @fwrite($fh, implode("\n", array_slice($z, -200)) . "\n");
+        }
+        @fseek($fh, 0, SEEK_END);
+        @fwrite($fh, $zeile);
+        @flock($fh, LOCK_UN);
+    }
+    @fclose($fh);
+}
+
+/**
+ * Ein Befehl der Befehlsbruecke (tun() in bin/befehle_zuordnung.php). $name scan | modus | takt | suche, $wert der von
+ * der Bruecke gepruefte Wert. Upgrade-Marke -> AKTUALISIERUNG; Name/Wert -> Aktion/Wert nach 3.2; dann ws_steuern(...,
+ * 'mqtt'). Kein HTTP, der Suchlauf ueber den Auftragsprozess. Rueckgabe array(bool ok, Grund ASCII).
+ */
+function ws_bb_tun($name, $wert)
+{
+    $name = (string) $name;
+    $wert = trim((string) $wert);
+    if (ws_upgrade_laeuft()) {
+        return array(false, 'AKTUALISIERUNG');
+    }
+    $karte = array(
+        'scan'  => array('scan', array('jetzt' => '', 'beides' => 'both', 'fritzbox' => 'fritzbox', 'ping' => 'ping')),
+        'modus' => array('mode', array('beides' => '0', 'fritzbox' => '1', 'ping' => '2')),
+        'takt'  => array('interval', null),
+        'suche' => array('enable', null),
     );
+    if (!isset($karte[$name])) {
+        return array(false, 'UNBEKANNT');
+    }
+    list($aktion, $werte) = $karte[$name];
+    if ($werte !== null) {
+        if (!array_key_exists($wert, $werte)) {
+            return array(false, 'WERT');
+        }
+        $wert = $werte[$wert];
+    }
+    list($code, $felder) = ws_steuern($aktion, $wert, 'mqtt');
+    if (!empty($felder['OK'])) {
+        return array(true, '');
+    }
+    return array(false, isset($felder['ERR']) ? (string) $felder['ERR'] : 'FEHLER');
+}
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). */
+function ws_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) {
+        return true;
+    }
+    $f = ws_bin_datei('befehlsbruecke.php');
+    if ($f === '') {
+        return false;
+    }
+    if (!defined('BB_NUR_LADEN')) {
+        define('BB_NUR_LADEN', true);
+    }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/**
+ * Direktstart bzw. -stopp der Bruecke nach dem Speichern (Bauart bl_/db_bruecke_schalten): befehlsbruecke.sh start
+ * startet nur nach --soll, nie als root, nie waehrend eines Updates, nie doppelt; der Waechter in cron.01min startet
+ * hoechstens alle 600 s neu. Rueckgabe array(''|'ein'|'aus'|'start_fehl'|'stop_fehl', Ausgabe).
+ */
+function ws_bruecke_schalten()
+{
+    if (DIRECTORY_SEPARATOR === '\\' || ws_paths()['home'] === '' || !ws_bruecke_laden()) {
+        return array('', '');
+    }
+    $p = bb_pfade();
+    if (!$p) {
+        return array('', '');
+    }
+    $e = ws_bb_einstellungen();
+    $laeuft = (bool) bb_dienste();
+    if ($e['annehmen']) {
+        if ($laeuft) {
+            return array('', '');
+        }
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array(($rc === 0 && bb_dienste()) ? 'ein' : 'start_fehl', $aus);
+    }
+    if (!$laeuft) {
+        return array('', '');
+    }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    return array(($rc === 0 && !bb_dienste()) ? 'aus' : 'stop_fehl', $aus);
+}
+
+/** Ein Satz zum Ergebnis von ws_bruecke_schalten() bzw. ws_haus_schalten() ('' = nichts zu sagen), unmaskiert. */
+function ws_schalten_satz(array $r, $was = 'BEFEHL')
+{
+    /* Je Schluessel ein ausgeschriebener sprintf-Aufruf (sprachplatzhalter_pruefen.py zaehlt nur so). */
+    $a = $r[1] !== '' ? trim((string) $r[1]) : '-';
+    $h = $was === 'HAUS';
+    switch ($r[0]) {
+        case 'ein':
+            return $h ? sprintf(ws_t('HAUS.M_GESTARTET'), $a) : sprintf(ws_t('BEFEHL.M_GESTARTET'), $a);
+        case 'aus':
+            return $h ? sprintf(ws_t('HAUS.M_ANGEHALTEN'), $a) : sprintf(ws_t('BEFEHL.M_ANGEHALTEN'), $a);
+        case 'start_fehl':
+            return $h ? sprintf(ws_t('HAUS.M_START_FEHL'), $a) : sprintf(ws_t('BEFEHL.M_START_FEHL'), $a);
+        case 'stop_fehl':
+            return $h ? sprintf(ws_t('HAUS.M_STOP_FEHL'), $a) : sprintf(ws_t('BEFEHL.M_STOP_FEHL'), $a);
+    }
+    return '';
+}
+
+/**
+ * W22: ist die Befehlsbruecke bereit? Reine Regel (ohne Prozesszugriff, vom Pruefstand gedeckt): Haken an, der Dienst
+ * laeuft argumentweise, seine zustand.json ist hoechstens BB_WACHE_GRENZE (180 s) alt und meldet ein Abo - dieselbe
+ * Regel wie der Waechter der Stammfassung. Bis 3.2.14 meldete das Feld LISTENER nur, dass ein Prozess da war.
+ */
+function ws_bruecke_bereit_aus($haken, $laeuft, $zustand, $jetzt)
+{
+    if (!$haken || !$laeuft || !is_array($zustand) || !isset($zustand['ts'])) {
+        return 0;
+    }
+    $alter = (int) $jetzt - (int) $zustand['ts'];
+    return ($alter >= -60 && $alter <= 180 && !empty($zustand['abo'])) ? 1 : 0;
+}
+
+/** W22: dasselbe am laufenden System - EINE Funktion fuer Endpunkt (Feld LISTENER), Kopf und ws_test.php. */
+function ws_bruecke_bereit(?array $cfg = null)
+{
+    if ($cfg === null) { $cfg = ws_config_read(false); }
+    $haken = ws_cfg($cfg, 'BASE.BEFEHLE_MQTT_EIN', '0') === '1';
+    if (!$haken || DIRECTORY_SEPARATOR === '\\' || !ws_bruecke_laden()) {
+        return 0;
+    }
+    $p = bb_pfade();
+    if (!$p) {
+        return 0;
+    }
+    return ws_bruecke_bereit_aus(true, (bool) bb_dienste(), bb_json_lesen($p['zustand']), time());
+}
+
+/** Kopf und Reiter Test: 'laeuft' | 'aus' (Haken) | 'steht'. */
+function ws_bruecke_zustand(?array $cfg = null)
+{
+    if ($cfg === null) { $cfg = ws_config_read(false); }
+    if (ws_cfg($cfg, 'BASE.BEFEHLE_MQTT_EIN', '0') !== '1') {
+        return 'aus';
+    }
+    return ws_bruecke_bereit($cfg) ? 'laeuft' : 'steht';
+}
+
+/** Ein Hilfsskript unter bin/ mit bash aufrufen (Feld, ohne Schale). Rueckgabe array(rc, Ausgabe). */
+function ws_sh_lauf($name, $befehl)
+{
+    $sh = ws_bin_datei($name);
+    if ($sh === '' || DIRECTORY_SEPARATOR === '\\' || !function_exists('proc_open')) {
+        return array(9, '');
+    }
+    $rohr = array();
+    $pr = @proc_open(array('/bin/bash', $sh, (string) $befehl), array(0 => array('file', '/dev/null', 'r'),
+                     1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $rohr);
+    if (!is_resource($pr)) {
+        return array(9, '');
+    }
+    $aus = trim((string) stream_get_contents($rohr[1]) . ' ' . (string) stream_get_contents($rohr[2]));
+    fclose($rohr[1]);
+    fclose($rohr[2]);
+    return array((int) proc_close($pr), $aus);
+}
+
+/** V3: Haus-Abnehmer nach dem Speichern starten oder anhalten (ws_haus.sh). Rueckgabe wie ws_bruecke_schalten(). */
+function ws_haus_schalten()
+{
+    if (DIRECTORY_SEPARATOR === '\\' || ws_paths()['home'] === '' || ws_bin_datei('ws_haus.sh') === '') {
+        return array('', '');
+    }
+    $c = ws_config_read(false);
+    list($rc0) = ws_sh_lauf('ws_haus.sh', 'status');
+    $laeuft = ($rc0 === 0);
+    if (ws_cfg($c, 'BASE.HAUS_ABNEHMER', '0') === '1') {
+        if ($laeuft) {
+            return array('', '');
+        }
+        list($rc, $aus) = ws_sh_lauf('ws_haus.sh', 'start');
+        list($rc1) = ws_sh_lauf('ws_haus.sh', 'status');
+        return array(($rc === 0 && $rc1 === 0) ? 'ein' : 'start_fehl', $aus);
+    }
+    if (!$laeuft) {
+        return array('', '');
+    }
+    list($rc, $aus) = ws_sh_lauf('ws_haus.sh', 'stop');
+    return array($rc === 0 ? 'aus' : 'stop_fehl', $aus);
+}
+
+/**
+ * V3 im Reiter Test: array(Zustand, Text). 1 hoert und die Quelle lebt; 3 (gelb) die Quelle schweigt - es gilt nur
+ * der eigene Takt (Nr. 15: "sagen es im Reiter Test"); 0 Haken an, aber der Abnehmer laeuft nicht; 2 Haken aus.
+ */
+function ws_haus_zustand(?array $cfg = null)
+{
+    if ($cfg === null) { $cfg = ws_config_read(false); }
+    if (ws_cfg($cfg, 'BASE.HAUS_ABNEHMER', '0') !== '1') {
+        return array(2, ws_t('TEST.P_HAUS_AUS'));
+    }
+    $p = ws_paths();
+    $ab = @json_decode((string) @file_get_contents($p['datadir'] . '/haus/abnehmer.json'), true);
+    $lebt_prozess = false;
+    if (is_array($ab) && isset($ab['pid'])) {
+        $c = @file_get_contents('/proc/' . (int) $ab['pid'] . '/cmdline');
+        $lebt_prozess = ($c !== false && strpos($c, 'ws_haus.php') !== false);
+    }
+    if (!$lebt_prozess || !isset($ab['ts']) || time() - (int) $ab['ts'] > 180) {
+        return array(0, ws_t('TEST.P_HAUS_TOT'));
+    }
+    $n = isset($ab['personen']) && is_array($ab['personen']) ? count($ab['personen']) : 0;
+    $ll = isset($ab['letzter_lauf']['ts']) ? (int) $ab['letzter_lauf']['ts'] : 0;
+    $zuletzt = isset($ab['quelle']['zuletzt']) ? (int) $ab['quelle']['zuletzt'] : 0;
+    if (!empty($ab['quelle']['lebt'])) {
+        return array(1, sprintf(ws_t('TEST.P_HAUS_OK'), $n, $ll > 0 ? date('H:i:s', $ll) : '—'));
+    }
+    return array(3, sprintf(ws_t('TEST.P_HAUS_SCHWEIGT'), $zuletzt > 0 ? (string) (time() - $zuletzt) : '—'));
+}
+
+/* ---------------- Namenstabelle und Befehle fuer Loxone (2.4, 3.8) ---------------- */
+
+/** Gateway-Name eines Themas: "/", "%" und Leerzeichen werden "_" (wie build_vi_name des Gateways). EINE Stelle. */
+function ws_vi_name($thema)
+{
+    return str_replace(array('/', '%', ' '), '_', (string) $thema);
+}
+
+/**
+ * Die Themen fuer Loxone - EINE Quelle fuer die Namenstabelle (Reiter Einbindung, Kopierknopf), die Thementabelle
+ * (ws_test.php?topics) und die Pruefzeile. Aus ws_themen() und dazu status/befehle der Bruecke. Je Zeile: thema, name,
+ * bedeutung, werte, retained, v2 ('N' = Noncached), haken (V2-Hakenliste des Musterprojekts), muster.
+ * V2-Hakenliste (E11): je Person, status/mode, /interval, /enabled, /ok (Noncached), /zaehler - nicht status/ts (nur
+ * BLE-Scanner NG liest es), nicht status/befehle, keine Quittungen.
+ */
+function ws_mqtt_namen(?array $cfg = null)
+{
+    if ($cfg === null) { $cfg = ws_config_read(false); }
+    $aus = array();
+    foreach (ws_themen($cfg) as $th) {
+        $ts = $th[0] === 'wifi_ng/status/ts';
+        $aus[] = array('thema' => $th[0], 'name' => ws_vi_name($th[0]), 'bedeutung' => $th[1], 'werte' => $th[2],
+                       'retained' => (bool) $th[3], 'v2' => $th[0] === 'wifi_ng/status/ok' ? 'N' : '',
+                       'haken' => !$ts, 'muster' => !$ts);
+    }
+    $aus[] = array('thema' => 'wifi_ng/status/befehle', 'name' => ws_vi_name('wifi_ng/status/befehle'),
+                   'bedeutung' => ws_t('LOX.T_BEFEHLE'), 'werte' => '-1 / 0 / 1', 'retained' => false, 'v2' => '',
+                   'haken' => false, 'muster' => false);
+    return $aus;
+}
+
+/** Pruefzeile Namenstabelle: jeder Name aus seinem Thema, keiner doppelt, V2-Haken wie im Musterprojekt. */
+function ws_pruef_namen(?array $cfg = null, ?array $namen = null)
+{
+    if ($cfg === null) { $cfg = ws_config_read(false); }
+    if ($namen === null) { $namen = ws_mqtt_namen($cfg); }
+    $falsch = array();
+    $gesehen = array();
+    $haken = 0;
+    $nc = 0;
+    foreach ($namen as $z) {
+        if ($z['name'] !== ws_vi_name($z['thema']) || strpos($z['name'], 'wifi_ng_') !== 0) {
+            $falsch[] = $z['name'];
+        }
+        if (isset($gesehen[$z['name']])) {
+            $falsch[] = $z['name'] . ' (2x)';
+        }
+        $gesehen[$z['name']] = 1;
+        $haken += $z['haken'] ? 1 : 0;
+        $nc += $z['v2'] === 'N' ? 1 : 0;
+    }
+    if ($falsch) {
+        return array(0, sprintf(ws_t('TEST.P_NAMEN_FALSCH'), ws_e(implode(', ', $falsch))));
+    }
+    return array(1, sprintf(ws_t('TEST.P_NAMEN_OK'), count($namen), $haken, $nc));
+}
+
+/** UDP-Eingang des MQTT-Gateways (general.json Mqtt.Udpinport, sonst 11884). */
+function ws_udp_eingang()
+{
+    $h = ws_paths()['home'];
+    $g = $h !== '' ? @json_decode((string) @file_get_contents($h . '/config/system/general.json'), true) : null;
+    $m = (is_array($g) && isset($g['Mqtt']) && is_array($g['Mqtt'])) ? $g['Mqtt'] : array();
+    $port = isset($m['Udpinport']) && is_numeric($m['Udpinport']) ? (int) $m['Udpinport'] : 0;
+    return ($port >= 1 && $port <= 65535) ? $port : 11884;
+}
+
+/** Rechnername fuer /dev/udp/<LoxBerry>/<Port> - ohne Port aus der Adresszeile. */
+function ws_host_udp()
+{
+    $h = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '';
+    $h = preg_replace('/:\d+$/', '', preg_replace('/[^A-Za-z0-9\.\-:\[\]]/', '', $h));
+    if ($h === '') {
+        $h = preg_replace('/[^A-Za-z0-9.-]/', '', (string) @gethostname());
+    }
+    return $h !== '' ? $h : 'loxberry';
+}
+
+/**
+ * Die Befehle fuer Loxone - EINE Quelle fuer die Tabelle im Reiter Einbindung und die Vorlage MQTT-Befehle (3.8).
+ * Titel FEST deutsch ("WiFi-Scanner-NG: ...", Sprachregel 13.10.2026) - kein Titel gleicht einem Gateway-Eingang (die
+ * heissen wifi_ng_...). "Takt schnell": Ein takt 1, Aus der eingestellte Takt, bei 1 (oder keinem erlaubten) 3 - wie
+ * ws_vorlage_steuerung(). Je Zeile: titel, name, ein, aus (oder null), kommentar (Sprachschluessel), eingreifend, muster.
+ */
+function ws_mqtt_befehle(?array $cfg = null)
+{
+    if ($cfg === null) { $cfg = ws_config_read(false); }
+    $takt = trim((string) ws_cfg($cfg, 'BASE.CRON', '3'));
+    if ($takt === '1' || !in_array($takt, ws_takte(), true)) {
+        $takt = '3';
+    }
+    return array(
+        array('titel' => 'WiFi-Scanner-NG: Suche jetzt', 'name' => 'scan', 'ein' => 'jetzt', 'aus' => null,
+              'kommentar' => ws_t('VORLAGE.MK_JETZT'), 'eingreifend' => false, 'muster' => true),
+        array('titel' => 'WiFi-Scanner-NG: Suche ein', 'name' => 'suche', 'ein' => '1', 'aus' => null,
+              'kommentar' => ws_t('VORLAGE.MK_EIN'), 'eingreifend' => true, 'muster' => true),
+        array('titel' => 'WiFi-Scanner-NG: Suche aus', 'name' => 'suche', 'ein' => '0', 'aus' => null,
+              'kommentar' => ws_t('VORLAGE.MK_AUS'), 'eingreifend' => true, 'muster' => true),
+        array('titel' => 'WiFi-Scanner-NG: Takt schnell', 'name' => 'takt', 'ein' => '1', 'aus' => $takt,
+              'kommentar' => sprintf(ws_t('VORLAGE.MK_SCHNELL'), $takt), 'eingreifend' => false, 'muster' => true),
+        array('titel' => 'WiFi-Scanner-NG: Suchweg Fritz!Box', 'name' => 'modus', 'ein' => 'fritzbox', 'aus' => null,
+              'kommentar' => ws_t('VORLAGE.MK_FRITZ'), 'eingreifend' => false, 'muster' => false),
+        array('titel' => 'WiFi-Scanner-NG: Suchweg Netzwerk-Suche', 'name' => 'modus', 'ein' => 'ping', 'aus' => null,
+              'kommentar' => ws_t('VORLAGE.MK_PING'), 'eingreifend' => false, 'muster' => false),
+        array('titel' => 'WiFi-Scanner-NG: Suchweg beides', 'name' => 'modus', 'ein' => 'beides', 'aus' => null,
+              'kommentar' => ws_t('VORLAGE.MK_BEIDES'), 'eingreifend' => false, 'muster' => false),
+    );
+}
+
+/**
+ * Vorlage "MQTT-Befehle" (3.8): ein Virtueller Ausgang an /dev/udp/<LoxBerry>/<UDP-Eingang des Gateways>,
+ * CloseAfterSend, je Zeile "publish wifi_ng/befehl/<name> <wert>" (nie retain). Aufbau wie die Ausfuhr aus Loxone
+ * Config (Bauart bl_xml_virtual_out). Rueckgabe array(Dateiname, Inhalt).
+ */
+function ws_vorlage_mqtt_out(?array $cfg = null)
+{
+    if ($cfg === null) { $cfg = ws_config_read(false); }
+    $x = function ($s) {
+        return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
+    };
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut HintText="" Title="WiFi-Scanner-NG Befehle (MQTT)" Comment="'
+        . $x(ws_kurz(sprintf(ws_t('VORLAGE.K_MQTT'), date('d.m.Y')))) . '" Address="'
+        . $x('/dev/udp/' . ws_host_udp() . '/' . ws_udp_eingang()) . '" CmdInit="" CloseAfterSend="true" CmdSep=";">' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
+    foreach (ws_mqtt_befehle($cfg) as $b) {
+        $o .= "\t" . '<VirtualOutCmd Title="' . $x($b['titel']) . '" Comment="' . $x(ws_kurz($b['kommentar'])) . '" '
+            . 'CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . $x('publish wifi_ng/befehl/' . $b['name'] . ' ' . $b['ein'])
+            . '" CmdOnHTTP="" CmdOnPost="" CmdOff="'
+            . ($b['aus'] === null ? '' : $x('publish wifi_ng/befehl/' . $b['name'] . ' ' . $b['aus']))
+            . '" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
+    }
+    $o .= '</VirtualOut>' . $crlf;
+    return array('VQ_WiFi-Scanner-NG_MQTT.xml', $o);
+}
+
+/** Pruefzeile Vorlage MQTT-Befehle: laedt, jedes Thema unter wifi_ng/befehl/, kein Titel = Gateway-Name, kein "%". */
+function ws_pruef_vorlage_mqtt(?array $cfg = null, $xml = null)
+{
+    if ($cfg === null) { $cfg = ws_config_read(false); }
+    if ($xml === null) { list(, $xml) = ws_vorlage_mqtt_out($cfg); }
+    if (!function_exists('simplexml_load_string')) {
+        return array(2, ws_t('TEST.P_VORLAGE_KEIN_PARSER'));
+    }
+    $alt = libxml_use_internal_errors(true);
+    $s = simplexml_load_string($xml);
+    libxml_clear_errors();
+    libxml_use_internal_errors($alt);
+    if ($s === false) {
+        return array(0, sprintf(ws_t('TEST.P_VORLAGE_KAPUTT'), 'VQ_WiFi-Scanner-NG_MQTT.xml'));
+    }
+    $namen = array();
+    foreach (ws_mqtt_namen($cfg) as $z) { $namen[$z['name']] = 1; }
+    $fehl = array();
+    $n = 0;
+    foreach ($s->VirtualOutCmd as $c) {
+        $n++;
+        $t = (string) $c['Title'];
+        if (isset($namen[$t])) { $fehl[] = $t . ' = Gateway-Name'; }
+        foreach (array('CmdOn', 'CmdOff') as $a) {
+            $v = (string) $c[$a];
+            if ($v !== '' && strpos($v, 'publish wifi_ng/befehl/') !== 0) { $fehl[] = $t . ' ' . $a; }
+        }
+        if (strpos((string) $c['Comment'], '%') !== false) { $fehl[] = $t . ' Comment %'; }
+    }
+    if ($fehl) {
+        return array(0, ws_e(implode('; ', $fehl)));
+    }
+    return array(1, sprintf(ws_t('TEST.P_VORLAGE_MQTT_OK'), $n));
+}
+
+/* ---------------- Pruefzeilen (Reiter Test) ---------------- */
+
+/**
+ * V4 (E19): Sprachdateien deckungsgleich? (1) Schluessel in beide Richtungen ueber ALLE Abschnitte von language_* und
+ * help_* (Vereinigung, keine feste Liste); (2) je gemeinsamem Schluessel gleiche Zahl der Platzhalter
+ * (/%(?:\d+\$)?[sdfu]/) - sprintf mit zu wenigen Argumenten wirft unter PHP 8 ArgumentCountError. Nachbau von BLE
+ * bl_sprachen_vergleich(). Rueckgabe array(bool, Text); hoechstens 12 Abweichungen genannt. $pfad nur fuer die Probe.
+ */
+function ws_sprachen_vergleich($pfad = null)
+{
+    if ($pfad === null) {
+        $pp = ws_paths();
+        $pfad = $pp['home'] !== '' ? $pp['home'] . '/templates/plugins/' . $pp['plugin'] . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
+            $pfad = dirname(dirname(__DIR__)) . '/templates/lang';
+        }
+    }
+    $abw = array();
+    $abschnitte = 0;
+    $schluessel = 0;
+    foreach (array('language', 'help') as $art) {
+        $de = @parse_ini_file($pfad . '/' . $art . '_de.ini', true, INI_SCANNER_RAW);
+        $en = @parse_ini_file($pfad . '/' . $art . '_en.ini', true, INI_SCANNER_RAW);
+        if (!is_array($de) || !is_array($en)) {
+            $abw[] = $art . '_de/_en.ini unlesbar';
+            continue;
+        }
+        foreach (array_unique(array_merge(array_keys($de), array_keys($en))) as $a) {
+            $abschnitte++;
+            $kd = isset($de[$a]) && is_array($de[$a]) ? $de[$a] : array();
+            $ke = isset($en[$a]) && is_array($en[$a]) ? $en[$a] : array();
+            foreach (array_diff(array_keys($kd), array_keys($ke)) as $k) { $abw[] = 'en: ' . $art . ' ' . $a . '.' . $k; }
+            foreach (array_diff(array_keys($ke), array_keys($kd)) as $k) { $abw[] = 'de: ' . $art . ' ' . $a . '.' . $k; }
+            foreach (array_intersect(array_keys($kd), array_keys($ke)) as $k) {
+                $schluessel++;
+                $zd = preg_match_all('/%(?:\d+\$)?[sdfu]/', (string) $kd[$k]);
+                $ze = preg_match_all('/%(?:\d+\$)?[sdfu]/', (string) $ke[$k]);
+                if ($zd !== $ze) { $abw[] = $a . '.' . $k . ' de=' . $zd . ' en=' . $ze; }
+            }
+        }
+    }
+    if ($abw) {
+        return array(false, sprintf(ws_t('TEST.P_SPRACHEN_ABW'), count($abw), ws_e(implode(', ', array_slice($abw, 0, 12)))));
+    }
+    return array(true, sprintf(ws_t('TEST.P_SPRACHEN_OK'), $abschnitte, $schluessel));
+}
+
+/**
+ * W21: wo liegt ein Werkzeug, und passt die sudoers-Regel? EINE Stelle fuer Reiter Test (Zeile Werkzeuge) und
+ * ws_test.php?diag. Rueckgabe array(Fundort oder '', 'passt' | 'anders' | 'fehlt'). Gesucht wie check.pl werkzeug().
+ */
+function ws_werkzeug_lage($name, $wurzel = '')
+{
+    foreach (array('/usr/sbin', '/sbin', '/usr/bin', '/bin') as $d) {
+        if (is_executable($wurzel . $d . '/' . $name)) {
+            $ort = $d . '/' . $name;
+            return array($ort, $ort === '/usr/sbin/' . $name ? 'passt' : 'anders');
+        }
+    }
+    return array('', 'fehlt');
+}
+
+/**
+ * E9: laeuft noch ein MQTT-Listener der Vorfassung, oder liegen seine Sperrdateien? argv[0] ein perl, argv[1]
+ * zeichengenau <bindir>/mqtt_listener.pl, genau zwei Argumente (dieselbe Pruefung wie bis 3.2.14). Rueckgabe
+ * array(PIDs, Sperrdateien).
+ */
+function ws_listener_reste()
+{
+    $p = ws_paths();
+    $skript = $p['bindir'] . '/mqtt_listener.pl';
+    $pids = array();
+    foreach ((array) @scandir('/proc') as $e) {
+        if (!ctype_digit((string) $e)) { continue; }
+        $roh = @file_get_contents('/proc/' . $e . '/cmdline');
+        if ($roh === false || $roh === '') { continue; }
+        $a = explode("\0", rtrim($roh, "\0"));
+        if (count($a) === 2 && preg_match('/^perl5?/', basename($a[0])) === 1 && $a[1] === $skript) {
+            $pids[] = (int) $e;
+        }
+    }
+    $sperren = array();
+    foreach (array('.listener.lock', '.listener_start.lock') as $s) {
+        $f = dirname($p['datadir']) . '/' . basename($p['datadir']) . $s;
+        if (@is_file($f)) { $sperren[] = basename($f); }
+    }
+    return array($pids, $sperren);
+}
+
+/**
+ * E7: stimmen die beiden Perl-Kopien der Modusregel ueberein, und geben sie dieselben vier Faelle wie ws_modus()?
+ * Verglichen wird der Block zwischen "# MODUSREGEL-ANFANG" und "# MODUSREGEL-ENDE" (Leerraum zusammengezogen), dann die
+ * return-Werte der Reihe nach gegen ws_modus() fuer 11, 10, 01, 00. Rueckgabe array(Zustand 1/0/2, Text).
+ */
+function ws_modusregel_pruefen($check = null, $abraeumen = null)
+{
+    $bl = array();
+    foreach (array('check.pl' => $check, 'mqtt_abraeumen.pl' => $abraeumen) as $n => $q) {
+        if ($q === null) {
+            $f = ws_bin_datei($n);
+            $q = $f !== '' ? (string) @file_get_contents($f) : '';
+        }
+        if (!preg_match('/# MODUSREGEL-ANFANG\n(.*?)# MODUSREGEL-ENDE/s', (string) $q, $m)) {
+            return array(2, sprintf(ws_t('TEST.P_MODUS_FEHLT'), $n));
+        }
+        $bl[$n] = preg_replace('/\s+/', ' ', trim($m[1]));
+    }
+    if ($bl['check.pl'] !== $bl['mqtt_abraeumen.pl']) {
+        return array(0, ws_t('TEST.P_MODUS_ABW'));
+    }
+    preg_match_all('/return (-?[0-9])/', $bl['check.pl'], $r);
+    $soll = array(ws_modus('1', '1'), ws_modus('1', '0'), ws_modus('0', '1'), ws_modus('0', '0'));
+    $ist = array_map('intval', $r[1]);
+    if ($ist !== $soll) {
+        return array(0, sprintf(ws_t('TEST.P_MODUS_PHP'), implode('/', $ist), implode('/', $soll)));
+    }
+    return array(1, sprintf(ws_t('TEST.P_MODUS_OK'), implode('/', $soll)));
+}
+
+/** E10 (eigener Fund F1): ergibt der Name das Thema wifi_ng/status oder wifi_ng/befehl? (gross/klein egal) */
+function ws_name_reserviert($name)
+{
+    return in_array(strtolower(ws_topic_name((string) $name)), array('status', 'befehl'), true);
+}
+
+/**
+ * E1/E10 im Bestand: Werte, die check.pl veraendert laese (Backslash, Leerzeichen am Komma im Fritz!Box-Zugang) und
+ * Personen mit reserviertem Thema. Nur Schluessel und Namen, nie ein Wert. Keine stille Aenderung - der Reiter Test
+ * sagt es (gelb).
+ */
+function ws_werte_hinweise(?array $cfg = null)
+{
+    if ($cfg === null) { $cfg = ws_config_read(false); }
+    $aus = array();
+    foreach (array('BASE.FRITZBOX_USER', 'BASE.FRITZBOX_PASS') as $k) {
+        $w = (string) ws_cfg($cfg, $k, '');
+        if (strpos($w, '\\') !== false || preg_match('/\s,|,\s/', $w) === 1) {
+            $aus[] = sprintf(ws_t('TEST.P_WERTE_FRITZ'), $k);
+        }
+    }
+    foreach (ws_users($cfg) as $u) {
+        if ($u['name'] !== '' && ws_name_reserviert($u['name'])) {
+            $aus[] = sprintf(ws_t('TEST.P_WERTE_NAME'), ws_e($u['name']));
+        }
+    }
+    return $aus;
+}
+
+/**
+ * W17: die Konfiguration aus der Zweitschrift wiederherstellen - wie ws_config_write(): Inhalt lesen, Kurzprobe
+ * ([BASE] da), daneben schreiben (Rechte 0600 VOR dem Inhalt), Laenge pruefen, umbenennen. Scheitert es, wird nichts
+ * angelegt und eine Zeile ins Protokoll geschrieben. Bis 3.2.14 stand hier @copy(): Rueckgabe ungeprueft, nicht
+ * unteilbar, und die Datei mit Merkwort und Fritz!Box-Kennwort entstand mit den Rechten der umask (meist 0644).
+ */
+function ws_selbstheilung($quelle, $ziel)
+{
+    $inhalt = @file_get_contents($quelle);
+    if ($inhalt === false || preg_match('/^\s*\[BASE\]\s*$/mi', (string) $inhalt) !== 1) {
+        error_log('wifi_ng: Zweitschrift ' . basename($quelle) . ' nicht brauchbar - keine Selbstheilung.');
+        return false;
+    }
+    @mkdir(dirname($ziel), 0775, true);
+    $tmp = $ziel . '.tmp.' . getmypid();
+    $fh = @fopen($tmp, 'c');
+    if ($fh === false) {
+        error_log('wifi_ng: Selbstheilung - ' . basename($tmp) . ' nicht anlegbar.');
+        return false;
+    }
+    @chmod($tmp, 0600);
+    $ok = @ftruncate($fh, 0) && @fwrite($fh, $inhalt) === strlen($inhalt) && @fflush($fh);
+    @fclose($fh);
+    if (!$ok || !@rename($tmp, $ziel)) {
+        @unlink($tmp);
+        error_log('wifi_ng: Selbstheilung aus der Zweitschrift gescheitert - keine Konfiguration angelegt.');
+        return false;
+    }
+    return true;
 }

@@ -62,6 +62,13 @@
 # 5. SPERRE. Ein Lauf, der bei zwanzig Geraeten in arping haengt, kann den
 #    naechsten ueberholen. Ein uebersprungener Lauf ist ausdruecklich KEIN
 #    Fehler und wird nicht als Stoerung gemeldet.
+#
+# 3.2.15 (Gruppe 14, Entwurf entwurf_gruppe14_ws.txt): der eigene MQTT-Listener
+# ist entfallen - Befehle nimmt die gemeinsame Befehlsbruecke an (bin/
+# befehlsbruecke.php), Auftraege kommen ueber bin/ws_auftrag.sh mit --auftrag
+# [--mode]. Dieses Skript sendet seither auch status/mode, /interval und
+# /enabled (retained, je Lauf), eine Person ohne Aussage bekommt -1 retained,
+# und es gibt das Weckpaket an 5353/udp (WECKPAKET, ab Werk aus).
 ##########################################################################
 
 use strict;
@@ -99,10 +106,12 @@ use Encode qw(decode);
 # /sbin nur ein Verweis. Gesucht wird deshalb der Reihe nach; gefunden wird
 # der erste ausfuehrbare Treffer.
 #
-# WICHTIG: die sudoers-Zeilen des Plugins nennen weiterhin die Pfade unter
-# /usr/sbin. Wird ein Programm anderswo gefunden, laesst sudo den Aufruf
-# nicht zu - deshalb legt postinstall.sh in diesem Fall einen Verweis in
-# /usr/sbin an.
+# WICHTIG: die sudoers-Zeilen des Plugins nennen nur die Pfade unter
+# /usr/sbin. Liegt ein Werkzeug anderswo, laesst sudo den Aufruf nicht zu,
+# und der Reiter Test meldet P_WZ_ANDERS. /usr/bin/arping waere
+# iputils-arping mit anderen Schaltern (-C1, -W 0.2 sind Habets-Syntax) -
+# bewusst nicht in den sudoers (W5, Gruppe 14; bis 3.2.14 stand hier, 
+# postinstall.sh lege einen Verweis an - das tut es seit I7 nicht mehr).
 sub werkzeug
 {
     my ($name) = @_;
@@ -172,15 +181,23 @@ my $user_count   = $pcfg->param("BASE.USERS")           // 0;
 my $udp_enable   = $pcfg->param("BASE.UDP_ENABLE")      // 0;
 my $logmax       = $pcfg->param("BASE.LOGMAX")          // 500;
 my $enabled      = $pcfg->param("BASE.ENABLED")         // 0;
+# Gruppe 14: der Takt fuer status/interval und V1 (Weckpaket, ab Werk aus).
+my $cron_takt    = $pcfg->param("BASE.CRON")            // '';
+my $weckpaket    = $pcfg->param("BASE.WECKPAKET")       // 0;
 
 # Config::Simple gibt bei einem Wert mit Komma ein Feld zurueck. Hier kommt
 # das nicht vor, aber ein Feld in einer Zahlenrechnung waere ein stiller
 # Fehler - deshalb wird jeder Skalar auch als solcher behandelt.
 for my $r (\$udpport, \$fritz_enable, \$fritz_host, \$fritz_port, \$fritz_user,
            \$fritz_pass, \$active_scan, \$ping_cmd, \$use_cache, \$user_count,
-           \$udp_enable, \$logmax, \$enabled) {
+           \$udp_enable, \$logmax, \$enabled, \$cron_takt, \$weckpaket) {
     $$r = ref($$r) eq 'ARRAY' ? join(',', @{$$r}) : $$r;
 }
+# E7 (Gruppe 14): status/mode richtet sich nach der KONFIGURATION, nicht nach
+# dem Lauf - $fritz_enable wird bei --mode und bei einer Stoerung unten
+# veraendert.
+my $cfg_fritz = $fritz_enable;
+my $cfg_aktiv = $active_scan;
 
 # Commandline options
 my $verbose = '';
@@ -203,13 +220,13 @@ LOGSTART "Starting $0 Version $version";
 # Installer-Pruefstand (Fall N2).
 #
 # Ein Lauf aus dem Zeitplan sucht deshalb nur bei ENABLED=1. Ein Auftrag -
-# Endpunkt aktion=scan, MQTT cmd/scan, Knopf im Reiter Test - traegt
-# --auftrag (der Listener dazu --mode) und sucht immer.
+# Endpunkt aktion=scan, Befehlsbruecke scan, Knopf im Reiter Test, V3 - traegt
+# --auftrag (ueber bin/ws_auftrag.sh, bei der Bruecke dazu --mode) und sucht immer.
 ##########################################################################
 
 if ("$enabled" ne "1" && !$auftrag && $mode eq '') {
     LOGINF "Regelmaessiges Suchen ist ausgeschaltet (ENABLED=$enabled) - ein Lauf aus dem "
-         . "Zeitplan sucht nicht. Auftraege (Endpunkt, cmd/scan, Reiter Test) suchen weiter.";
+         . "Zeitplan sucht nicht. Auftraege (Endpunkt, Befehlsbruecke, Reiter Test) suchen weiter.";
     LOGEND "Nicht gesucht.";
     exit 0;
 }
@@ -234,7 +251,7 @@ if (open($sperre, '>', $sperrdatei)) {
     LOGWARN "Sperrdatei nicht anlegbar ($sperrdatei) - es wird ohne Sperre gearbeitet.";
 }
 
-# Mode override via commandline (used by mqtt_listener.pl):
+# Mode override via commandline (used by ws_auftrag.sh for the command bridge):
 # 0|both = Fritzbox + active scan, 1|fritzbox = Fritzbox only, 2|ping = active scan only
 if ($mode ne '') {
     if ($mode =~ /^(0|both|all|full)$/i) {
@@ -249,8 +266,12 @@ if ($mode ne '') {
     LOGINF "Mode override: FRITZBOX_ENABLE=$fritz_enable ACTIVE_SCAN=$active_scan";
 }
 
-if (!%miniservers) {
-    lox_die("No Miniservers configured");
+# W2 (Gruppe 14): Miniserver braucht nur der UDP-Weg. Bis 3.2.14 brach der
+# Lauf auch im MQTT-Betrieb ab - ohne Abbild, ohne MQTT.
+if ($udp_enable && !%miniservers) {
+    lox_die("No Miniservers configured - UDP needs one");
+} elsif (!%miniservers) {
+    LOGINF "Kein Miniserver eingetragen - ueber MQTT wird trotzdem gesendet.";
 }
 
 ##########################################################################
@@ -379,10 +400,17 @@ if ($fritz_enable) {
     my $discover;
     my @dienste = ();
     if ($fritz_enable) {
-        $discover = eval { XMLin($resp_discover->decoded_content) };
+        # W1 + E2 (Gruppe 14): ForceArray fuer device und service, KeyAttr => []
+        # (der Werk-KeyAttr name/key/id faltete Listen zu Hashes). Hosts1 kann in
+        # jedem Untergeraet stehen (E2) - gesucht wird ueber alle, nicht nur im
+        # ersten. Bis 3.2.14 stand hier ->{device}->[0]: ein Geraet mit EINEM
+        # Untergeraet (Hash statt Liste) oder Hosts1 im zweiten ergab "control
+        # URL/service type not found".
+        $discover = eval { XMLin($resp_discover->decoded_content,
+                                 ForceArray => ['device', 'service'], KeyAttr => []) };
         my $grund = $@;
         if (ref($discover) eq 'HASH') {
-            @dienste = eval { @{$discover->{device}->{deviceList}->{device}->[0]->{serviceList}->{service}} };
+            @dienste = dienste_sammeln($discover, 0);
         } else {
             $grund = 'keine lesbare Struktur' if (!defined $grund || $grund eq '');
             $grund =~ s/\s+$//;
@@ -395,7 +423,9 @@ if ($fritz_enable) {
     }
 
     if ($fritz_enable) {
-        my $modell = eval { $discover->{device}->{modelName} };
+        # Mit ForceArray ist {device} eine Liste - der Name steht im Wurzelgeraet.
+        my $wurzel = (ref($discover->{device}) eq 'ARRAY') ? $discover->{device}->[0] : $discover->{device};
+        my $modell = (ref($wurzel) eq 'HASH') ? $wurzel->{modelName} : undef;
         $modell = '?' if (!defined $modell || ref($modell));
         LOGINF "$modell detected...";
 
@@ -588,6 +618,7 @@ if ($active_scan) {
 
         my $gefunden = 0;
         foreach my $ip (@{$users[$i]{IPS}}) {
+            weckpaket($ip);
             if (ping($ip)) {
                 $gefunden = 1;
                 $users[$i]{ONLINE} = 1;
@@ -612,6 +643,9 @@ if ($active_scan) {
                 # als Ziel nehmen.
                 $ip = $mac;
             }
+            # V1: nur an eine bekannte IPv4 - fuer eine MAC ohne IP hat mac2ip()
+            # schon arp-scan geschickt.
+            weckpaket($ip) if ($ip ne $mac);
             if (ping($ip)) {
                 $users[$i]{ONLINE} = 1;
                 $users[$i]{WEG} = 'arping';
@@ -640,8 +674,9 @@ if (!$fritz_konfig && !$active_scan) {
 # code Nr. 1, mqtt Nr. 1). Eine Loxone-Logik, die status/ok nicht mit
 # auswertet, schaltete "alle weg".
 #
-# Jetzt: wer in diesem Lauf nicht gemessen wurde, geht nicht hinaus - weder
-# ueber MQTT noch ueber UDP. Im Abbild bleibt sein letzter Messwert stehen,
+# Jetzt: wer in diesem Lauf nicht gemessen wurde, geht ueber UDP nicht hinaus
+# und ueber MQTT seit 3.2.15 als -1 retained ("keine Aussage", E5 Gruppe 14;
+# Hausform wie BLE anwesend_gesamt). Im Abbild bleibt sein letzter Messwert stehen,
 # und status/ok geht mit dem wahren Grund auf 0. Gemessen ist eine Person,
 # wenn die Box ueber sie etwas Verwertbares gesagt hat oder der aktive Scan
 # sie abgesucht hat (Modus "beides" bei gestoerter Box).
@@ -655,8 +690,8 @@ foreach my $u (@users) {
     $ohne_aussage++ if (!$gemessen);
 }
 if ($ohne_aussage) {
-    LOGWARN "$ohne_aussage Person(en) ohne Aussage in diesem Lauf - sie werden nicht gesendet, "
-          . "im Abbild bleibt der letzte Messwert stehen, und status/ok steht auf 0.";
+    LOGWARN "$ohne_aussage Person(en) ohne Aussage in diesem Lauf - ueber MQTT als -1, ueber UDP "
+          . "gar nicht gesendet; im Abbild bleibt der letzte Messwert stehen, und status/ok steht auf 0.";
 }
 
 # C4: der Zaehler wird EINMAL je Lauf bestimmt. Bis 3.2.9 las sendFoundUsers()
@@ -670,46 +705,9 @@ if ($abgewiesen) {
     LOGWARN "$abgewiesen Adresse(n) wurden abgewiesen - siehe die Zeilen oben.";
 }
 
-##########################################################################
-# Der Waechter fuer den MQTT-Listener
-#
-# Der Listener wird beim Hochfahren gestartet und danach nie wieder. Stirbt
-# er zwischendurch - Broker weg, Netz weg, Speicher knapp -, ist die
-# Steuerung aus Loxone bis zum naechsten Neustart stumm.
-#
-# Fail safe: gestartet wird nur, wenn MQTT ueberhaupt der gewaehlte Weg ist,
-# das Skript wirklich da ist und nachweislich keiner laeuft. Im Zweifel
-# passiert nichts.
-##########################################################################
-
-if (!$udp_enable) {
-    my $skript = "$lbpbindir/mqtt_listener.pl";
-    if (-f $skript && !listener_pid($skript)) {
-        # I4 (Durchgang 02.10.2026): Startsperre, gemeinsam mit daemon/daemon.
-        # Bis 3.2.9 fragten beide Wege erst /proc und starteten dann, ohne
-        # gemeinsame Sperre - Systemstart mit nachgeholtem Cron-Takt ergab in
-        # 10 von 10 Runden zwei Listener (Installer-Pruefer, Fall D1). Die Sperre
-        # liegt NEBEN dem Datenordner, den purge_installation loescht. Perl setzt
-        # FD_CLOEXEC: die Schale unten und der Listener erben sie nicht.
-        my $sp;
-        my $gesperrt = 0;
-        if (open($sp, '>>', "$lbpdatadir.listener_start.lock")) {
-            $gesperrt = flock($sp, LOCK_EX | LOCK_NB) ? 1 : -1;
-        }
-        if ($gesperrt < 0) {
-            LOGINF "Ein anderer Start des MQTT-Listeners laeuft gerade - hier wird keiner gestartet.";
-        } elsif (!listener_pid($skript)) {
-            LOGWARN "Der MQTT-Listener lief nicht - er wird neu gestartet.";
-            system('/bin/sh', '-c', "nohup perl '$skript' > /dev/null 2>&1 &");
-            # Die Sperre haelt, bis der neue Listener in /proc steht.
-            for (1 .. 20) {
-                last if (listener_pid($skript));
-                select(undef, undef, undef, 0.1);
-            }
-        }
-        close($sp) if ($sp);
-    }
-}
+# Der Waechter fuer den MQTT-Listener ist mit 3.2.15 entfallen (Gruppe 14,
+# E9): den Listener gibt es nicht mehr, Befehle nimmt die Befehlsbruecke an
+# (Waechter in cron/cron.01min).
 
 LOGEND "Operation finished sucessfully.";
 log_kappen($logmax);
@@ -816,7 +814,12 @@ sub ping
     LOGINF "Ping $ziel";
 
     my @cmd;
-    if ($ping_cmd == 0) {
+    if (adresse_art($ziel) eq 'ip6') {
+        # W8 (Gruppe 14): arping kennt kein IPv6 (dort gibt es kein ARP) - eine
+        # IPv6-Adresse galt bis 3.2.14 immer als offline. Eine Zone (%eth0)
+        # weist adresse_art() schon ab.
+        @cmd = ('/bin/ping', '-6', '-i', '0.2', '-c', '3', $ziel);
+    } elsif ($ping_cmd == 0) {
         # Viele Anfragen, aber die Antwort kommt so schnell wie moeglich.
         @cmd = ('sudo', $ARPING, '-W', '0.2', '-c', '20', '-C1', $ziel);
     } elsif ($ping_cmd == 1) {
@@ -905,15 +908,19 @@ sub sendFoundUsers
         # (umstieg_abraeumen() unten, mit Nachlesen beim Broker).
         my $alt_thema = mqtt_topic_name($u->{NAME});
         push(@umstieg, "wifi_ng/$alt_thema") if ($alt_thema ne '' && $alt_thema ne $name_thema);
-        if (!$u->{AUSSAGE}) {
-            LOGINF "Keine Aussage ueber $u->{NAME} in diesem Lauf - wifi_ng/$name_thema wird nicht gesendet.";
-            next;
-        }
         if ($name_thema eq '') {
             LOGERR "Aus dem Namen '$u->{NAME}' entsteht kein MQTT-Thema - nicht gesendet.";
             next;
         }
         my $topic = "wifi_ng/" . $name_thema;
+        if (!$u->{AUSSAGE}) {
+            # E5 (Gruppe 14): -1 = "keine Aussage" statt den letzten Wert stehen zu
+            # lassen. Kommt nur zusammen mit status/ok = 0; mit Aussage wieder 0/1.
+            LOGINF "Keine Aussage ueber $u->{NAME} in diesem Lauf - -1 an $topic gesendet.";
+            $mqtt->retain($topic, -1);
+            $gesendet++;
+            next;
+        }
         LOGOK "Sending '$u->{ONLINE}' to $topic on MQTT broker $mqttcred->{brokeraddress}";
         $mqtt->retain($topic, $u->{ONLINE});
         $gesendet++;
@@ -936,7 +943,8 @@ sub sendFoundUsers
     # Fall "ultraschall/online 0" eines laengst beendeten Dienstes.
     #
     # ZUSTAENDE bleiben retained: die Anwesenheit je Person oben, und
-    # status/mode, status/interval, status/enabled im Listener.
+    # status/mode, status/interval, status/enabled unten (seit 3.2.15 hier,
+    # bis 3.2.14 im Listener).
     #
     # ts geht bei JEDEM Durchgang hinaus, auch unveraendert - ueber MQTT
     # gibt es kein "Alter", nur einen Zeitstempel, und der Miniserver
@@ -946,16 +954,22 @@ sub sendFoundUsers
     $mqtt->publish("wifi_ng/status/ts", $jetzt);
     $mqtt->publish("wifi_ng/status/zaehler", $zaehler);
 
-    # Ob der Listener laeuft, wird HIER gemessen und nicht vom Listener
-    # selbst behauptet. Net::MQTT::Simple kennt keinen letzten Willen; ein
-    # Dienst, der seinen eigenen Tod melden soll, ist ohnehin der falsche
-    # Zeuge. Alle drei Minuten eine echte Messung ist besser.
+    # E7 (Gruppe 14): das Lebenszeichen ist status/zaehler je Lauf. Ein Letzter
+    # Wille passte nicht, weil dieses Skript ein Einmallauf ist - die
+    # Verbindung endet nach jedem Lauf gewollt. status/listener ist mit dem
+    # Listener entfallen.
     #
-    # C10 (Durchgang 02.10.2026): 1 nur, wenn der Prozess laeuft UND er
-    # selbst meldet, verbunden zu sein und abonniert zu haben - siehe
-    # listener_bereit().
-    $mqtt->publish("wifi_ng/status/listener", listener_bereit() ? 1 : 0);
-    $gesendet += 4;
+    # Die Zustaende des Zeitplans (bis 3.2.14 vom Listener gesendet) gehen je
+    # Lauf retained hinaus - aus der KONFIGURATION, nicht aus dem Lauf. Nach
+    # jeder Aenderung sendet sie ausserdem mqtt_abraeumen.pl --status (zweite
+    # Kopie der Modusregel; der Reiter Test vergleicht beide). Ein leerer Takt
+    # geht nie retained hinaus (eine leere Nutzlast mit Retain loescht).
+    my $modus = modus_aus_cfg($cfg_fritz, $cfg_aktiv);
+    $mqtt->retain("wifi_ng/status/mode", $modus);
+    if ("$cron_takt" ne '') { $mqtt->retain("wifi_ng/status/interval", $cron_takt); }
+    else                   { $mqtt->publish("wifi_ng/status/interval", $cron_takt); }
+    $mqtt->retain("wifi_ng/status/enabled", ("$enabled" eq '1') ? 1 : 0);
+    $gesendet += 6;
 
     # Net::MQTT::Simple puffert. Ein disconnect() unmittelbar nach dem
     # letzten Senden kann die Nachrichten verwerfen - deshalb erst
@@ -1086,70 +1100,74 @@ sub zustand_schreiben
     return 1;
 }
 
-# Laeuft unser Listener? Argumentweise gegen den VOLLEN Pfad - "pgrep -f"
-# traefe auch einen Editor mit offener Datei oder ein zweites Exemplar des
-# Plugins.
-#
-# C7 (Durchgang 02.10.2026): dieselbe Pruefung wie ws_ist_listener() und
-# daemon/daemon - GENAU zwei Argumente, argv[0] ist ein perl, argv[1] ist
-# zeichengenau der Pfad. Bis 3.2.9 genuegte hier, dass argv[0] ODER argv[1]
-# der Pfad war: ein Koeder "tail <pfad> -f" galt als laufender Listener,
-# status/listener meldete 1, und der Waechter heilte nicht (Pruefer code
-# Nr. 8, Fall F11b). Bauart K1/K2, in 3.2.7 an den anderen Stellen behoben.
-sub listener_pid
+# listener_pid() und listener_bereit() sind mit dem Listener entfallen (3.2.15,
+# Gruppe 14, E9). Ob ein Rest der Vorfassung laeuft, prueft der Reiter Test.
+
+# E7 (Gruppe 14): die Modusregel - -1 keine Suche, 0 beides, 1 nur Fritz!Box,
+# 2 nur Scan. ZWEI Kopien EINER Regel: hier und in mqtt_abraeumen.pl (--status);
+# der Reiter Test vergleicht beide Bloecke zwischen den Marken.
+# MODUSREGEL-ANFANG
+sub modus_aus_cfg
 {
-    my ($skript) = @_;
-    my $dh;
-    return 0 if (!opendir($dh, '/proc'));
-    my $treffer = 0;
-    while (my $e = readdir($dh)) {
-        next if ($e !~ /^[0-9]+$/);
-        my $fh;
-        next if (!open($fh, '<:raw', "/proc/$e/cmdline"));
-        local $/;
-        my $roh = <$fh>;
-        close($fh);
-        next if (!defined $roh || $roh eq '');
-        # split laesst das leere Feld hinter dem letzten Nullbyte weg.
-        my @args = split(/\0/, $roh);
-        next if (scalar(@args) != 2);
-        my $interp = $args[0];
-        $interp =~ s{.*/}{};
-        next if ($interp ne 'perl' && $interp !~ /^perl5/);
-        if ($args[1] eq $skript) {
-            $treffer = $e;
-            last;
-        }
+    my ($f, $a) = @_;
+    $f = (defined $f && "$f" eq '1') ? 1 : 0;
+    $a = (defined $a && "$a" eq '1') ? 1 : 0;
+    return 0 if ($f && $a);
+    return 1 if ($f);
+    return 2 if ($a);
+    return -1;
+}
+# MODUSREGEL-ENDE
+
+# W1 + E2 (Gruppe 14): alle serviceList->service eines tr64desc-Baums - Wurzel,
+# deviceList->device[*] und deren Kinder. Liste oder einzelner Hash, beides
+# (mit ForceArray ist es immer eine Liste; ohne waere ein einzelnes Kind ein Hash).
+# Tiefe begrenzt: ein fremdes Geraet unter fritz.box darf keine Endlosschleife bauen.
+sub dienste_sammeln
+{
+    my ($k, $tiefe) = @_;
+    return () if ($tiefe > 8);
+    my @aus = ();
+    if (ref($k) eq 'ARRAY') {
+        push(@aus, dienste_sammeln($_, $tiefe + 1)) foreach (@{$k});
+        return @aus;
     }
-    closedir($dh);
-    return $treffer;
+    return () if (ref($k) ne 'HASH');
+    if (ref($k->{serviceList}) eq 'HASH') {
+        my $s = $k->{serviceList}->{service};
+        push(@aus, ref($s) eq 'ARRAY' ? @{$s} : (ref($s) eq 'HASH' ? ($s) : ()));
+    }
+    push(@aus, dienste_sammeln($k->{device}, $tiefe + 1)) if (exists $k->{device});
+    push(@aus, dienste_sammeln($k->{deviceList}, $tiefe + 1)) if (exists $k->{deviceList});
+    return @aus;
 }
 
-# Ist der Listener bereit - laeuft er, ist er verbunden, hat er abonniert?
-#
-# C10 (Durchgang 02.10.2026): der Listener legt alle 30 s und bei jedem
-# Wiederverbinden data/plugins/<ordner>/listener.json ab (pid, verbunden,
-# abonniert, ts). Gezaehlt wird nur ein frischer Eintrag (hoechstens 120 s)
-# derselben Prozessnummer. Bis 3.2.9 genuegte der Prozess: ein Listener, dem
-# nach einem Wiederverbinden das Abonnement fehlte, galt als "1", waehrend
-# Befehle aus Loxone ins Leere liefen (Pruefer mqtt Nr. 6).
-sub listener_bereit
+# V1 (Gruppe 14, E18): ein UDP-Weckpaket an 5353 (mDNS) vor arping/ping - nur
+# mit WECKPAKET=1 und nur an eine bekannte IPv4. Inhalt eine gueltige
+# DNS-SD-Anfrage: Kopf 12 Byte (QDCOUNT 1), Frage "_services._dns-sd._udp.local"
+# PTR (12), Klasse IN mit QU-Bit (0x8001). Danach 0,3 s Zeit zum Aufwachen.
+# 62078 ist TCP (iOS-Lockdown) und entfaellt (Pruefbericht). Kein sudo, kein
+# neues Paket. Ob es hilft, misst geraet_messung.sh (Abschnitt weckpaket).
+sub weckpaket
 {
-    my $skript = "$lbpbindir/mqtt_listener.pl";
-    return 0 if (!-f $skript);
-    my $pid = listener_pid($skript);
-    return 0 if (!$pid);
-    my $fh;
-    return 0 if (!open($fh, '<:raw', "$lbpdatadir/listener.json"));
-    local $/;
-    my $roh = <$fh>;
-    close($fh);
-    my $j = eval { decode_json(defined $roh ? $roh : '') };
-    return 0 if (ref($j) ne 'HASH');
-    return 0 if (!defined $j->{pid} || "$j->{pid}" ne "$pid");
-    return 0 if (!$j->{verbunden} || !$j->{abonniert});
-    my $alter = time() - (defined $j->{ts} && $j->{ts} =~ /^[0-9]+$/ ? $j->{ts} : 0);
-    return ($alter >= -60 && $alter <= 120) ? 1 : 0;
+    my ($ip) = @_;
+    return 0 if ("$weckpaket" ne '1');
+    return 0 if (adresse_art($ip) ne 'ip4');
+    my $name = '';
+    foreach my $teil ('_services', '_dns-sd', '_udp', 'local') {
+        $name .= chr(length($teil)) . $teil;
+    }
+    my $paket = pack('n6', 0, 0, 1, 0, 0, 0) . $name . chr(0) . pack('nn', 12, 0x8001);
+    my $sock = IO::Socket::INET->new(Proto => 'udp', PeerAddr => $ip, PeerPort => 5353);
+    if (!$sock) {
+        LOGDEB "Weckpaket an $ip:5353 nicht moeglich: $!";
+        return 0;
+    }
+    $sock->send($paket);
+    $sock->close();
+    LOGDEB "Weckpaket an $ip:5353";
+    select(undef, undef, undef, 0.3);
+    return 1;
 }
 
 # O3: eine MAC-Adresse mit Bindestrichen (Schreibweise von ipconfig /all).

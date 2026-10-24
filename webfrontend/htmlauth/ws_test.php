@@ -9,7 +9,7 @@
  *   ?status   -> Kurzfassung: Modus, Intervall, Nutzer, MQTT-Themen
  *   ?topics   -> nur die MQTT-Themen, zum Abgleich mit dem MQTT Finder
  *   ?config   -> Konfiguration im Klartext (Geheimnisse maskiert)
- *   ?diag     -> Selbsttest: Cron, Listener, Broker, Werkzeuge, Perl-Module
+ *   ?diag     -> Selbsttest: Cron, Befehlsbruecke, Broker, Werkzeuge, Perl-Module
  *
  * WAS HIER SEIT 3.1.12 NICHT MEHR STEHT: ?scan und ?restart.
  *
@@ -90,8 +90,12 @@ if (isset($_GET['topics'])) {
                $th[3] ? ws_t('T.RETAIN_JA') : ws_t('T.RETAIN_NEIN'));
     }
     echo "\n" . ws_t('T.THEMEN_BEFEHLE') . "\n";
-    foreach (ws_befehle() as $bf) {
-        printf("  %-30s %s\n", $bf[0], $bf[1]);
+    foreach (ws_mqtt_befehle($cfg) as $bf) {
+        printf("  %-30s %s\n", 'wifi_ng/befehl/' . $bf['name'], $bf['ein'] . ($bf['aus'] !== null ? ' / ' . $bf['aus'] : ''));
+    }
+    echo "\n" . ws_t('T.THEMEN_NAMEN') . "\n";
+    foreach (ws_mqtt_namen($cfg) as $nz) {
+        printf("  %-34s %s\n", $nz['name'], $nz['haken'] ? 'V2' . ($nz['v2'] === 'N' ? ' N' : '') : '-');
     }
     exit;
 }
@@ -126,9 +130,10 @@ if (isset($_GET['diag'])) {
     printf("   %-19s %s\n\n", ws_t('T.D_EINGESTELLT') . ':',
         sprintf(ws_t('T.ALLE_MINUTEN'), ws_cfg($cfg, 'BASE.CRON', '?')));
 
-    $pid = ws_listener_running();
-    printf("2. %-19s %s\n", ws_t('T.D_LISTENER') . ':',
-        $pid ? sprintf(ws_t('T.LAEUFT_PID'), $pid) : ws_t('T.LAEUFT_NICHT_GROSS'));
+    $bz = ws_bruecke_zustand($cfg);   // W22 (Gruppe 14): bereit statt Prozess
+    printf("2. %-19s %s\n", ws_t('T.D_BRUECKE') . ':',
+        $bz === 'laeuft' ? ws_t('T.LAEUFT') : ($bz === 'aus' ? ws_t('T.BRUECKE_AUS') : ws_t('T.LAEUFT_NICHT_GROSS')));
+    printf("   %-19s %s\n", ws_t('T.D_ENDPUNKT_EIN') . ':', ws_endpunkt_ein($cfg) ? ws_t('ALLG.EIN') : ws_t('ALLG.AUS'));
     $broker = ws_mqtt_broker();
     printf("   %-19s %s\n", 'MQTT Gateway:', $broker !== '' ? $broker : ws_t('T.NICHT_GEFUNDEN_KURZ'));
     $g = ws_mqtt_gateway_info();
@@ -153,12 +158,16 @@ if (isset($_GET['diag'])) {
     echo "\n";
 
     echo '4. ' . ws_t('T.D_WERKZEUGE') . ":\n";
-    foreach (array('/usr/sbin/arping', '/usr/sbin/arp', '/usr/sbin/arp-scan', '/bin/ping') as $t) {
-        echo '   ' . str_pad($t, 22) . (is_executable($t) ? ws_t('T.VORHANDEN') : ws_t('T.FEHLT')) . "\n";
+    /* W21 (Gruppe 14): dieselbe Fundortlogik wie der Reiter Test (ws_werkzeug_lage) - bis 3.2.14 nur /usr/sbin. */
+    foreach (array('arping', 'arp', 'arp-scan') as $t) {
+        list($ort, $art) = ws_werkzeug_lage($t);
+        echo '   ' . str_pad($t, 22) . ($art === 'passt' ? ws_t('T.VORHANDEN') . ' (' . $ort . ')'
+            : ($art === 'anders' ? sprintf(ws_t('T.WZ_ANDERS'), $ort, '/usr/sbin/' . $t) : ws_t('T.FEHLT'))) . "\n";
     }
+    echo '   ' . str_pad('ping', 22) . (is_executable('/bin/ping') ? ws_t('T.VORHANDEN') : ws_t('T.FEHLT')) . "\n";
 
     echo "\n5. " . ws_t('T.D_MODULE') . ":\n";
-    /* Die Liste ist die, die check.pl und mqtt_listener.pl wirklich laden.
+    /* Die Liste ist die, die check.pl und mqtt_abraeumen.pl wirklich laden.
      * Bis 3.1.11 fehlte hier File::HomeDir - und in dpkg/apt fehlte das
      * zugehoerige Paket. Beides ist in 3.1.12 aufgeloest: check.pl laedt das
      * Modul nicht mehr, weil es es nie benutzt hat. */
@@ -173,7 +182,10 @@ if (isset($_GET['diag'])) {
             // hier folgenlos, weil nur $rc benutzt wird, aber es liest sich wie
             // ein Fehler und waere in der naechsten Fassung einer.
             $dummy = array();
-            @exec('perl -M' . escapeshellarg($m) . ' -e 1 2>/dev/null', $dummy, $rc);
+            /* W20 (Gruppe 14): Net::MQTT::Simple liegt nur in <home>/libs/perllib - ob Apache PERL5LIB an exec-Kinder
+             * vererbt, ist ungemessen; mit -I ist die Antwort in beiden Faellen richtig. */
+            $inc = $p['home'] !== '' ? '-I ' . escapeshellarg($p['home'] . '/libs/perllib') . ' ' : '';
+            @exec('perl ' . $inc . '-M' . escapeshellarg($m) . ' -e 1 2>/dev/null', $dummy, $rc);
             echo '   ' . str_pad($m, 22) . ($rc === 0 ? ws_t('T.VORHANDEN') : ws_t('T.FEHLT')) . "\n";
         }
     }
@@ -208,7 +220,7 @@ if (isset($_GET['diag'])) {
 
     echo "\n" . ws_t('T.H_HINWEISE') . ":\n";
     echo '- ' . ws_t('T.HINW_CRON') . "\n";
-    echo '- ' . ws_t('T.HINW_LISTENER') . "\n";
+    echo '- ' . ws_t('T.HINW_BRUECKE') . "\n";
     echo '- ' . ws_t('T.HINW_ARPING') . "\n";
     exit;
 }
@@ -223,8 +235,8 @@ printf("%-18s %s\n", 'Fritz!Box:', ws_cfg($cfg, 'BASE.FRITZBOX', '-') . ':' . ws
     . (ws_cfg($cfg, 'BASE.FRITZBOX_USER', '') !== '' ? ' (' . ws_t('T.MIT_ANMELDUNG') . ')' : ''));
 printf("%-18s %s\n", ws_t('T.D_WEG') . ':', ws_cfg($cfg, 'BASE.UDP_ENABLE', '0') === '1'
     ? sprintf(ws_t('T.UDP_AN_PORT'), ws_cfg($cfg, 'BASE.PORT', '-')) : 'MQTT');
-printf("%-18s %s\n", ws_t('T.D_LISTENER') . ':',
-    ws_listener_running() ? ws_t('T.LAEUFT') : ws_t('T.LAEUFT_NICHT'));
+printf("%-18s %s\n", ws_t('T.D_BRUECKE') . ':',
+    ws_bruecke_bereit($cfg) ? ws_t('T.LAEUFT') : ws_t('T.LAEUFT_NICHT'));
 printf("%-18s %s\n", 'Cron:',
     ws_cron_current() !== '' ? ws_cron_current() : ws_t('T.KEINE_VERKNUEPFUNG'));
 printf("%-18s %s\n\n", ws_t('T.D_LETZTER') . ':',

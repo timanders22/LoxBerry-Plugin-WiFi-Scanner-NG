@@ -9,6 +9,20 @@ ARGV5=$5 # Fifth argument is Base folder of LoxBerry
 # Rueckfall, falls sudo die Umgebung ausgeraeumt hat (env_reset).
 # Das fuenfte Argument ist das Wurzelverzeichnis und traegt immer.
 LBHOMEDIR="${LBHOMEDIR:-$5}"
+# W4 (Gruppe 14): dieselbe Torbedingung wie preinstall.sh - ohne config/plugins, data/plugins UND
+# config/system/general.json unter der Wurzel und mit einem Ordnernamen ohne Pfadtrenner wird nichts angefasst.
+# Bis 3.2.14 rechneten die Skripte ohne Argumente mit Pfaden wie /data/plugins/.upgrade_sicherung (gemessen,
+# Pruefbericht W4). plugininstall.pl uebergibt immer fuenf Argumente (Regeln/06) - das Tor gilt Handaufrufen.
+BASE="${5:-$LBHOMEDIR}"
+PDIR="${3:-wifi_ng}"
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then
+    echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt ('$BASE') - nichts angefasst."
+    exit 0
+fi
+case "$PDIR" in
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PDIR' - nichts angefasst."; exit 0 ;;
+esac
 
 # ---------- Marke "Aktualisierung laeuft" ----------
 #
@@ -41,21 +55,91 @@ LBHOMEDIR="${LBHOMEDIR:-$5}"
 #   aus ihr heilt ws_config_read() spaeter, und nur sie uebersteht eine
 #   Neuinstallation. Der Schaden ueberlebt das Upgrade also.
 #
-# Der Startweg daemon/daemon und die Oberflaeche lesen die Marke;
-# postupgrade.sh - das letzte Hakenskript dieser Linie - entfernt sie
-# NACH dem Start.
-WS_MARKE="$LBHOMEDIR/data/plugins/${3:-wifi_ng}.upgrade_laeuft"
-mkdir -p "$LBHOMEDIR/data/plugins" 2>/dev/null
+# Die Oberflaeche, der Endpunkt, die Befehlsbruecke und der Haus-Abnehmer lesen
+# die Marke; postupgrade.sh - das letzte Hakenskript dieser Linie - entfernt sie
+# an seinem Ende.
+WS_MARKE="$BASE/data/plugins/$PDIR.upgrade_laeuft"
 date +%s > "$WS_MARKE" 2>/dev/null
 if [ -s "$WS_MARKE" ]; then
     chmod 0644 "$WS_MARKE" 2>/dev/null
     echo "<OK> Start und Oberflaeche bis zum Ende der Installation gesperrt."
 else
-    echo "<WARNING> Die Marke $WS_MARKE liess sich nicht anlegen - der Listener"
+    echo "<WARNING> Die Marke $WS_MARKE liess sich nicht anlegen - die Befehlsbruecke"
     echo "<WARNING> kann waehrend der Installation starten, und ein Aufruf der"
     echo "<WARNING> Oberflaeche kann in dieser Zeit die Zweitschrift der"
     echo "<WARNING> Einstellungen ueberschreiben."
 fi
+
+# ---------- Gruppe 14: Befehlsbruecke und Haus-Abnehmer NACH der Marke anhalten ----------
+# befehlsbruecke.sh start und ws_haus.sh start sowie ihre Waechter (cron.01min) pruefen dieselbe Marke und
+# starten nicht, solange sie liegt (hoechstens 3600 s). Beim Update von 3.2.14 gibt es beide noch nicht - dann tut
+# der Block nichts. 9>&-: keine offene Sperre vererben.
+for WS_SH in befehlsbruecke.sh ws_haus.sh; do
+    if [ -f "$BASE/bin/plugins/$PDIR/$WS_SH" ] && command -v bash >/dev/null 2>&1; then
+        echo "<INFO> $WS_SH: $(timeout 40 bash "$BASE/bin/plugins/$PDIR/$WS_SH" stop 2>&1 9>&- | head -n 1)"
+    fi
+done
+
+# ---------- E9 (Gruppe 14, 3.2.15): den MQTT-Listener der Vorfassung abraeumen ----------
+#
+# Den eigenen Listener (bin/mqtt_listener.pl) gibt es seit 3.2.15 nicht mehr; Befehle nimmt die Befehlsbruecke an.
+# Der alte Prozess laeuft beim Update aber weiter, auch nachdem purge_installation seine Datei geloescht hat - argv
+# bleibt "perl <home>/bin/plugins/<ordner>/mqtt_listener.pl". Bis 3.2.14 hielt ihn preupgrade.sh gar nicht an und
+# postupgrade.sh nur, wenn die Datei noch da war: ohne Datei im neuen Paket bliebe er stehen, hoerte weiter auf
+# wifi_ng/cmd/# und schriebe in die zurueckgespielte Konfiguration. Deshalb hier OHNE Dateipruefung, argumentweise
+# (argv[0] ein perl, argv[1] zeichengenau der Pfad, genau zwei Argumente - die Pruefung von 3.2.7), mit W4b-Form
+# (kill -9 nur, wenn derselbe Prozess noch lebt und noch unserer ist) und Nachzaehlen. Gleichlautend in preupgrade.sh
+# (direkt nach der Marke) und postinstall.sh (Rueckfall); beide Stellen zusammen pflegen.
+WS_LISTENER="$BASE/bin/plugins/$PDIR/mqtt_listener.pl"
+ws_ist_listener() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    ws_n=0
+    ws_treffer=0
+    while IFS= read -r ws_arg; do
+        ws_n=$((ws_n + 1))
+        if [ "$ws_n" = 1 ]; then
+            case "${ws_arg##*/}" in
+                perl|perl5*) ;;
+                *) return 1 ;;
+            esac
+        elif [ "$ws_n" = 2 ] && [ "$ws_arg" = "$WS_LISTENER" ]; then
+            ws_treffer=1
+        fi
+    done <<WS_ARGUMENTE
+$( { tr '\0' '\n' < "/proc/$1/cmdline"; } 2>/dev/null )
+WS_ARGUMENTE
+    [ "$ws_treffer" = 1 ] && [ "$ws_n" = 2 ]
+}
+ws_listener_abraeumen() {
+    ws_weg=0
+    for D in /proc/[0-9]*; do
+        P=${D#/proc/}
+        ws_ist_listener "$P" || continue
+        kill "$P" 2>/dev/null
+        for i in 1 2 3 4 5; do
+            kill -0 "$P" 2>/dev/null || break
+            sleep 1
+        done
+        kill -0 "$P" 2>/dev/null && ws_ist_listener "$P" && kill -9 "$P" 2>/dev/null
+        sleep 0.2 2>/dev/null
+        if kill -0 "$P" 2>/dev/null && ws_ist_listener "$P"; then
+            echo "<WARNING> Der MQTT-Listener der Vorfassung (PID $P) liess sich nicht beenden."
+        else
+            echo "<OK> MQTT-Listener der Vorfassung beendet (PID $P)."
+            ws_weg=$((ws_weg + 1))
+        fi
+    done
+    ws_rest=0
+    for D in /proc/[0-9]*; do
+        ws_ist_listener "${D#/proc/}" && ws_rest=$((ws_rest + 1))
+    done
+    if [ "$ws_rest" -gt 0 ]; then
+        echo "<WARNING> Es laufen noch $ws_rest MQTT-Listener der Vorfassung - nach dem Update den LoxBerry neu starten."
+    elif [ "$ws_weg" -eq 0 ]; then
+        echo "<INFO> Es lief kein MQTT-Listener der Vorfassung."
+    fi
+}
+ws_listener_abraeumen
 
 # ---------- Inhaltsprobe ----------
 #
@@ -119,7 +203,7 @@ ws_token() {
 # Pruefsummen der mitgelieferten Vorgaben - dieselben wie in postinstall.sh.
 ws_vorgabe() {
     case "$1" in
-        cfg) echo "30bcb5717482b3b0aa670ce91a023ab7100fac5db98d0e271e879555a541fc3a" ;;
+        cfg) echo "383233087c3d801f0a7f00b1ad5aef00c2df34118dd7e7d0c403aa213d4a0354" ;;
         abo) echo "8e8f8a5e3c6ba7c6fbfe7d6fed9f81f663067d3964501f51ad051cd65d6d5d98" ;;
     esac
 }
@@ -179,13 +263,15 @@ ws_darf_ersetzen() {   # ws_darf_ersetzen cfg|abo <quelle> <ziel>
 # <sicherung>.neu, jede Datei der Konfiguration byteweise nachgesehen, dann
 # umbenennen; die alte faellt erst danach. Und: eine Sicherung mit heiler
 # wifi_scanner.cfg wird nie durch eine ohne ersetzt.
-SICHER="$ARGV5/data/plugins/$ARGV3.upgrade_sicherung"
+SICHER="$BASE/data/plugins/$PDIR.upgrade_sicherung"
 NEU="$SICHER.neu"
-KONF="$ARGV5/config/plugins/$ARGV3"
+KONF="$BASE/config/plugins/$PDIR"
 echo "<INFO> Creating backup folder for upgrading"
 # $NEU ist nur der Rest eines frueheren, abgebrochenen Laufs dieses Blocks.
 rm -rf "$NEU" 2>/dev/null
-mkdir -p "$NEU/config" "$NEU/log" 2>/dev/null
+# E6 (Gruppe 14): die Protokolle werden nicht mehr gesichert - log/plugins/<ordner> loescht der Installer beim
+# Upgrade nicht (Regeln/06: nur bei "all"); das Zurueckspielen ueberschrieb hoechstens neue Zeilen.
+mkdir -p "$NEU/config" 2>/dev/null
 chmod 0700 "$NEU" 2>/dev/null
 
 SICHER_OK=0
@@ -221,9 +307,6 @@ if [ "$SICHER_OK" = "1" ] && [ -d "$SICHER" ] \
 fi
 
 if [ "$SICHER_OK" = "1" ]; then
-    echo "<INFO> Backing up existing log files"
-    cp -p -r "$ARGV5/log/plugins/$ARGV3/." "$NEU/log/" 2>/dev/null \
-        || echo "<WARNING> Die Protokolle liessen sich nicht vollstaendig sichern."
     rm -rf "$SICHER.alt" 2>/dev/null
     if [ -d "$SICHER" ]; then mv "$SICHER" "$SICHER.alt" 2>/dev/null; fi
     if mv "$NEU" "$SICHER" 2>/dev/null; then
@@ -233,7 +316,7 @@ if [ "$SICHER_OK" = "1" ]; then
         if [ -d "$SICHER.alt" ] && [ ! -e "$SICHER" ]; then mv "$SICHER.alt" "$SICHER" 2>/dev/null; fi
         rm -rf "$NEU" 2>/dev/null
         echo "<WARNING> Die neue Sicherung liess sich nicht an ihren Platz bringen."
-        echo "<WARNING> Platz und Rechte in $ARGV5/data/plugins pruefen."
+        echo "<WARNING> Platz und Rechte in $BASE/data/plugins pruefen."
     fi
 else
     rm -rf "$NEU" 2>/dev/null
@@ -250,8 +333,8 @@ fi
 # an postupgrade.sh. Laeuft das aus irgendeinem Grund nicht durch, greift
 # jetzt postinstall.sh auf diese Zweitschrift zu - sie liegt ausserhalb des
 # ueberschriebenen Ordners und wird vom Installer nicht angefasst.
-NETZ_BASE="${5:-$LBHOMEDIR}"
-NETZ_PDIR="${3:-wifi_ng}"
+NETZ_BASE="$BASE"
+NETZ_PDIR="$PDIR"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 # Entschieden wird nach Inhalt (ws_darf_ersetzen oben), geschrieben
 # unteilbar: erst <zweitschrift>.neu, nachgesehen, dann umbenannt. Ein

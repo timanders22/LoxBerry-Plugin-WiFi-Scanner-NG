@@ -6,19 +6,22 @@
  * MQTT steuern; wer kein Gateway faehrt, hatte gar keinen Rueckkanal.
  *
  * Diese Datei liegt im UNANGEMELDETEN Bereich - der Miniserver kann sich
- * nicht anmelden. Geschuetzt wird sie durch das Merkwort der Anlage:
+ * nicht anmelden. Geschuetzt wird sie durch das Merkwort der Anlage und -
+ * seit 3.2.15 (Gruppe 14, E6) - durch den Haken "HTTP-Endpunkt fuer Loxone
+ * annehmen" (BASE.ENDPUNKT_EIN; neu ab Werk aus, beim Update an, wenn ein
+ * Merkwort da ist). Ohne Haken antwortet jeder Aufruf 403 ERR=ENDPUNKT_AUS.
  *
- *   Abfragend, ohne Merkwort:
- *     /plugins/wifi_ng/index.php                  Antwortzeile fuer Loxone
- *     /plugins/wifi_ng/index.php?json=1           dasselbe als JSON
+ *   Abfragend, seit 3.2.15 ebenfalls NUR mit Merkwort (E4 des Pruefberichts):
+ *     /plugins/wifi_ng/index.php?token=<TOKEN>          Antwortzeile fuer Loxone
+ *     /plugins/wifi_ng/index.php?token=<TOKEN>&json=1   dasselbe als JSON
  *
  *   Ausloesend, NUR mit Merkwort:
  *     ...?token=<TOKEN>&aktion=scan               Sofort-Scan
  *     ...?token=<TOKEN>&aktion=enable&wert=0|1    periodisches Suchen
  *     ...?token=<TOKEN>&aktion=interval&wert=<n>  Takt in Minuten
  *     ...?token=<TOKEN>&aktion=mode&wert=0|1|2    Suchweg
- *     ...?token=<TOKEN>&aktion=listener           Listener neu starten
- *                                                 (nur bei MQTT; bei UDP 409 ERR=WEG_UDP)
+ *     ...?token=<TOKEN>&aktion=listener           seit 3.2.15 409 ERR=ENTFALLEN (E8;
+ *                                                 Befehle nimmt die Befehlsbruecke an)
  *
  *   Selbsttest:
  *     ...?selftest=1&token=<TOKEN>
@@ -115,6 +118,14 @@ function ws_token_ok($soll, $ist)
     return ($soll !== '' && is_string($ist) && $ist !== '' && hash_equals($soll, $ist));
 }
 
+/* ---------------- endpunkt_ein (Gruppe 14, E6) ----------------
+ * Der GANZE Endpunkt steht hinter dem Haken "HTTP-Endpunkt fuer Loxone annehmen" (BASE.ENDPUNKT_EIN; Neuinstallation
+ * aus, Update: an, wenn ein gueltiges Merkwort da ist - ws_endpunkt_ein()). Geprueft VOR Selbsttest, Aktion und
+ * Abfrage, und bevor irgendein Zustand gelesen wird (Grundsatz 2 oben). Muster Heimkino/Sprachsteuerung. */
+if (!ws_endpunkt_ein($ws_cfg)) {
+    ws_ende(403, $ws_selftest ? 'SELFTEST;OK=0;ERR=ENDPUNKT_AUS' : 'WIFI;OK=0;ERR=ENDPUNKT_AUS');
+}
+
 /* ---------------- Selbsttest ----------------
  * Genau drei Antworten, kein Geraetekontakt, kein Schreibzugriff. Er darf
  * ausdruecklich KEINE Abkuerzung an der Sicherheit vorbei sein: ohne
@@ -142,106 +153,33 @@ if ($ws_aktion !== '') {
      * 3.2.7. In der Luecke zwischen purge_installation und postupgrade.sh
      * steht hier die mitgelieferte Vorgabe; ein Schreibzugriff legte sie
      * samt Zweitschrift fest (gemessen, siehe ws_lib.php, ws_upgrade_laeuft).
-     * EINE Stelle fuer alle ausloesenden Aufrufe: einen einzelnen Handler
-     * kann man beim Erweitern vergessen, einen Wachposten am Eingang nicht.
-     * 503 heisst "vorlaeufig nicht", nicht "kaputt" - der Grund steht in der
-     * Zeile (Regeln/07). */
+     * EINE Stelle fuer alle ausloesenden Aufrufe. 503 heisst "vorlaeufig
+     * nicht", nicht "kaputt" - der Grund steht in der Zeile (Regeln/07). */
     if (ws_upgrade_laeuft()) {
         ws_ende(503, 'WIFI;OK=0;ERR=UPGRADE');
     }
-    $ws_p = ws_paths();
-
-    if ($ws_aktion === 'scan') {
-        $bin = $ws_p['bindir'] . '/check.pl';
-        if (!is_file($bin)) {
-            ws_ende(500, 'WIFI;OK=0;ERR=CHECK_FEHLT');
-        }
-        /* C13 (Durchgang 02.10.2026): --auftrag - ein Befehl aus Loxone sucht
-         * auch bei ausgeschaltetem regelmaessigem Suchen. */
-        @exec('nohup perl ' . escapeshellarg($bin) . ' --auftrag > /dev/null 2>&1 &');
-        ws_ende(200, 'WIFI;OK=1;AKTION=scan');
-    }
-
+    /* E8 (Gruppe 14): den Listener gibt es seit 3.2.15 nicht mehr - eine Bestandsadresse bekommt einen sprechenden
+     * Grund statt 400 ERR=AKTION. Befehle aus Loxone nimmt die Befehlsbruecke an. */
     if ($ws_aktion === 'listener') {
-        /* c1 (02.10.2026): der Listener laeuft nur bei MQTT. Bis 3.2.9 startete
-         * dieser Aufruf ihn auch bei UDP. */
-        if (ws_cfg($ws_cfg, 'BASE.UDP_ENABLE', '0') === '1') {
-            ws_ende(409, 'WIFI;OK=0;AKTION=listener;ERR=WEG_UDP');
-        }
-        $pid = ws_listener_restart();
-        ws_ende($pid ? 200 : 500,
-                ws_endpunkt_zeile('WIFI', array('OK' => $pid ? 1 : 0,
-                                                'AKTION' => 'listener', 'PID' => (int) $pid)));
+        ws_ende(409, 'WIFI;OK=0;AKTION=listener;ERR=ENTFALLEN');
     }
-
-    /* Die drei schreibenden Aktionen. Der Wert wird gegen dieselbe Pruefung
-     * gehalten wie ein Feld der Oberflaeche - eine zweite Wahrheit ueber
-     * zulaessige Werte gibt es nicht. */
-    $ws_ziel = array('enable' => 'BASE.ENABLED', 'interval' => 'BASE.CRON');
-    if (isset($ws_ziel[$ws_aktion]) || $ws_aktion === 'mode') {
-        if ($ws_cfg === array()) {
-            ws_ende(500, 'WIFI;OK=0;ERR=KEINE_KONFIG');
-        }
-        $neu = $ws_cfg;
-        if ($ws_aktion === 'mode') {
-            if ($ws_wert === '0') { $neu['BASE.FRITZBOX_ENABLE'] = '1'; $neu['BASE.ACTIVE_SCAN'] = '1'; }
-            elseif ($ws_wert === '1') { $neu['BASE.FRITZBOX_ENABLE'] = '1'; $neu['BASE.ACTIVE_SCAN'] = '0'; }
-            elseif ($ws_wert === '2') { $neu['BASE.FRITZBOX_ENABLE'] = '0'; $neu['BASE.ACTIVE_SCAN'] = '1'; }
-            else { ws_ende(400, 'WIFI;OK=0;ERR=WERT'); }
-        } else {
-            $schluessel = $ws_ziel[$ws_aktion];
-            if (ws_wert_pruefen($schluessel, $ws_wert) !== '') {
-                ws_ende(400, 'WIFI;OK=0;ERR=WERT');
-            }
-            $neu[$schluessel] = $ws_wert;
-        }
-        /* C6 (Durchgang 02.10.2026, Entscheidung 19, X-7): steht der Wert schon
-         * so in der Konfiguration, wird nichts geschrieben und der Listener nicht
-         * neu gestartet - die Antwort traegt UNVERAENDERT=1. Bis 3.2.9 schrieb
-         * jeder Aufruf die Konfiguration neu und startete den Listener neu; in
-         * der Luecke von etwa einer Sekunde gingen MQTT-Befehle verloren
-         * (Pruefer code Nr. 7: 4 Listener-Starts bei 4 Aufrufen).
-         *
-         * Derselbe Befehl binnen 60 s tut gar nichts. Kommt er spaeter wieder,
-         * wird nur der Zeitplan nachgezogen (ws_cron_apply ist unteilbar und
-         * heilt eine fehlende Verknuepfung) - geschrieben wird auch dann nichts. */
-        $ws_gleich = true;
-        foreach ($neu as $ws_k => $ws_v) {
-            if (!array_key_exists($ws_k, $ws_cfg) || (string) $ws_cfg[$ws_k] !== (string) $ws_v) {
-                $ws_gleich = false;
-                break;
-            }
-        }
-        if ($ws_gleich) {
-            if (!ws_befehl_binnen($ws_aktion, $ws_wert)) {
-                ws_befehl_merken($ws_aktion, $ws_wert);
-                ws_cron_apply(ws_cfg($neu, 'BASE.ENABLED', '0'), ws_cfg($neu, 'BASE.CRON', '3'));
-            }
-            ws_ende(200, ws_endpunkt_zeile('WIFI', array('OK' => 1, 'AKTION' => $ws_aktion,
-                                                         'WERT' => $ws_wert, 'UNVERAENDERT' => 1)));
-        }
-        if (!ws_config_write($neu)) {
-            ws_ende(500, 'WIFI;OK=0;ERR=SCHREIBEN');
-        }
-        ws_befehl_merken($ws_aktion, $ws_wert);
-        ws_cron_apply(ws_cfg($neu, 'BASE.ENABLED', '0'), ws_cfg($neu, 'BASE.CRON', '3'));
-        /* c1: neu gestartet wird nur bei MQTT; bei UDP wird ein liegengebliebener
-         * Listener angehalten (bis 3.2.9 hier immer neu gestartet). */
-        if (ws_cfg($neu, 'BASE.UDP_ENABLE', '0') === '1') {
-            ws_listener_stop();
-        } else {
-            ws_listener_restart();
-        }
-        ws_ende(200, ws_endpunkt_zeile('WIFI', array('OK' => 1,
-                                                     'AKTION' => $ws_aktion, 'WERT' => $ws_wert)));
-    }
-
-    ws_ende(400, 'WIFI;OK=0;ERR=AKTION');
+    /* EINE Logik (Gruppe 14, 3.4): ws_steuern() in ws_lib.php - dieselbe Funktion ruft die Befehlsbruecke. Codes und
+     * Felder sind dieselben wie bis 3.2.14 (OK, AKTION, WERT, UNVERAENDERT, ERR); der Suchlauf geht ueber
+     * bin/ws_auftrag.sh (ERR=AUFTRAG_FEHLT, wenn er nicht startet). */
+    list($ws_code, $ws_f) = ws_steuern($ws_aktion, $ws_aktion === 'scan' ? '' : $ws_wert, 'http');
+    ws_ende($ws_code, ws_endpunkt_zeile('WIFI', $ws_f));
 }
 
 /* ---------------- Abfragende Aufrufe ----------------
- * Ohne Merkwort erreichbar: sie loesen nichts aus und verraten nichts, was
- * nicht ohnehin am Miniserver steht. Das Merkwort selbst kommt hier NIE vor. */
+ * E4 des Pruefberichts / E6 (Gruppe 14): auch die Abfrage NUR mit Merkwort. Die Antwortzeile traegt die Namen der
+ * Personen (P_<Name>) und wer zu Hause ist - bis 3.2.14 stand hier, sie verrate nichts, was nicht ohnehin am
+ * Miniserver stehe; tatsaechlich verriet sie es jedem im Heimnetz. Die im Reiter Einbindung angezeigte Adresse traegt
+ * das Merkwort (ws_endpunkt_pfad). Das Merkwort selbst kommt in der Antwort NIE vor. */
+if (!ws_token_ok($ws_soll, $ws_token_ein)) {
+    error_log('wifi_ng: Abfrage des Endpunkts ohne gueltiges Merkwort, von '
+              . (isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '?'));
+    ws_ende(403, 'WIFI;OK=0;ERR=TOKEN');
+}
 
 $ws_z      = ws_zustand_lesen();
 $ws_alter  = ws_zustand_alter($ws_z);
@@ -268,12 +206,8 @@ foreach ($ws_users as $u) {
     if ($wert === 1) { $ws_da++; }
 }
 
-$ws_fritz  = (string) ws_cfg($ws_cfg, 'BASE.FRITZBOX_ENABLE', '0');
-$ws_aktiv  = (string) ws_cfg($ws_cfg, 'BASE.ACTIVE_SCAN', '0');
-/* C8 (Durchgang 02.10.2026): beide Wege aus heisst -1 ("keine Suche"), nicht
- * 2 ("nur Scan") - so wie status/mode im Listener. */
-$ws_mode   = ($ws_fritz === '1' && $ws_aktiv === '1') ? 0
-           : (($ws_fritz === '1') ? 1 : (($ws_aktiv === '1') ? 2 : -1));
+/* C8: beide Wege aus heisst -1 ("keine Suche") - dieselbe Regel wie status/mode (ws_modus, E7). */
+$ws_mode = ws_modus(ws_cfg($ws_cfg, 'BASE.FRITZBOX_ENABLE', '0'), ws_cfg($ws_cfg, 'BASE.ACTIVE_SCAN', '0'));
 
 $ws_felder = array(
     'OK'       => $ws_frisch ? (int) ($ws_z['ok'] === 1) : 0,
@@ -284,7 +218,10 @@ $ws_felder = array(
     'ENABLED'  => (int) (ws_cfg($ws_cfg, 'BASE.ENABLED', '0') === '1'),
     'MODE'     => $ws_mode,
     'INTERVAL' => (int) ws_cfg($ws_cfg, 'BASE.CRON', '3'),
-    'LISTENER' => ws_listener_running() ? 1 : 0,
+    /* W22/E8 (Gruppe 14): der Name bleibt (Suchtexte im Bestand), der Wert sagt jetzt "Steuerung aus Loxone bereit":
+     * 1, wenn die Befehlsbruecke laeuft, abonniert hat und frisch ist (ws_bruecke_bereit) - nicht mehr nur "ein
+     * Prozess ist da". */
+    'LISTENER' => ws_bruecke_bereit($ws_cfg),
     'CRON'     => ws_cron_current() !== '' ? 1 : 0,
 );
 foreach ($ws_pers as $thema => $wert) {

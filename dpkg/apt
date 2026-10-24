@@ -29,6 +29,9 @@ libdata-validate-ip-perl
 libcapture-tiny-perl
 # Config::Simple
 libconfig-simple-perl
+# mosquitto-clients: gebraucht von der Befehlsbruecke (bin/befehlsbruecke.php) und vom
+# Haus-Abnehmer (bin/ws_haus.php, V3); Werte sendet check.pl weiter ueber Net::MQTT::Simple.
+mosquitto-clients
 
 # Net::MQTT::Simple steht hier bewusst NICHT - ENTFERNT 13.09.2026 (3.2.2).
 #

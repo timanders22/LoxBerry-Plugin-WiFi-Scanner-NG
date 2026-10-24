@@ -12,10 +12,10 @@
 # LoxBerry raeumt die Plugin-Ordner weg und entfernt den Cron-Eintrag und
 # die sudoers-Zeilen. Zwei Dinge bleiben sonst liegen:
 #
-#   1. Der MQTT-Listener. Er wird beim Hochfahren mit "nohup ... &"
-#      gestartet und haengt an keinem Elternprozess, den LoxBerry beenden
-#      wuerde - ohne dieses Skript liefe er bis zum naechsten Neustart
-#      weiter und haenge weiter am Broker.
+#   1. Die Dauerprozesse: seit 3.2.15 die Befehlsbruecke und der Haus-Abnehmer
+#      (V3), bis 3.2.14 der MQTT-Listener (fuer abgebrochene Updates wird er
+#      weiter gesucht). Sie haengen an keinem Elternprozess, den LoxBerry beenden
+#      wuerde.
 #   2. Die retained Themen im Broker. Das Plugin veroeffentlicht die
 #      Anwesenheit MIT Retain-Merker, damit der Miniserver nach einem
 #      Neustart sofort den letzten Stand hat. Genau das bedeutet aber:
@@ -29,6 +29,11 @@
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="wifi_ng"
+# Praefixschutz (Hausregel Gruppe 4: das uninstall von zigbee2mqtt riss zigbee2mqttng mit): nur der EIGENE Ordner,
+# kein Name mit Pfadtrenner, und unten nirgends ein Muster "$PDIR*" - jeder Pfad ist ausgeschrieben.
+case "$PDIR" in
+    */*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PDIR' - nichts angefasst."; exit 1 ;;
+esac
 BASE="${5:-$LBHOMEDIR}"
 # Dritter Rueckfall: vom eigenen Ablageort aufwaerts suchen. Bewusst kein
 # fest verdrahteter Systempfad - LoxBerry laesst sich anderswohin
@@ -98,6 +103,57 @@ WS_ARGUMENTE
     [ "$ws_treffer" = 1 ] && [ "$ws_n" = 2 ]
 }
 
+# ---------- Befehlsbruecke und Haus-Abnehmer (seit 3.2.15, Gruppe 14; Bauart BLE-Scanner NG 1.3.28) ----------
+# Erst <dienst>.sh stop, dann nachzaehlen: ein Dienst dieses Ordners (php, genau zwei Argumente, argv[1] der eigene
+# Pfad) und ein mosquitto_sub mit der eigenen Optionsdatei werden hart beendet. Die Optionsdateien tragen das
+# Broker-Kennwort - vor dem Loeschen ueberschreiben, dann den Ordner entfernen. Im Broker bleibt nichts: Quittungen und
+# status/befehle sind nie retained, und der Haus-Abnehmer schreibt nichts unter haus/.
+UN_PBIN="$BASE/bin/plugins/$PDIR"
+UN_PBIN_P=$(cd "$UN_PBIN" 2>/dev/null && pwd -P)
+ws_dienst_raeumen() {   # ws_dienst_raeumen <sh> <php> <datenordner> <name>
+    ws_sh="$UN_PBIN/$1"; ws_php="$UN_PBIN/$2"; ws_dd="$BASE/data/plugins/$PDIR/$3"
+    if [ -f "$ws_sh" ] && command -v bash >/dev/null 2>&1; then
+        echo "<INFO> $4: $(timeout 40 bash "$ws_sh" stop 2>&1 9>&- | head -n 1)"
+    fi
+    ws_rest=0
+    for ws_d in /proc/[0-9]*; do
+        grep -qaF "$2" "$ws_d/cmdline" 2>/dev/null || continue
+        ws_a0=$(tr '\0' '\n' < "$ws_d/cmdline" 2>/dev/null | sed -n 1p)
+        ws_a1=$(tr '\0' '\n' < "$ws_d/cmdline" 2>/dev/null | sed -n 2p)
+        ws_n=$(tr '\0' '\n' < "$ws_d/cmdline" 2>/dev/null | grep -c '')
+        case "${ws_a0##*/}" in php|php[0-9]*) ;; *) continue ;; esac
+        if [ "$ws_n" = 2 ] && { [ "$ws_a1" = "$ws_php" ] || { [ -n "$UN_PBIN_P" ] && [ "$ws_a1" = "$UN_PBIN_P/$2" ]; }; }; then
+            kill -9 "${ws_d#/proc/}" 2>/dev/null && ws_rest=$((ws_rest + 1))
+        fi
+    done
+    ws_abos=0
+    for ws_d in /proc/[0-9]*; do
+        [ "$(cat "$ws_d/comm" 2>/dev/null)" = "mosquitto_sub" ] || continue
+        if tr '\0' '\n' < "$ws_d/environ" 2>/dev/null | grep -qxF "XDG_CONFIG_HOME=$ws_dd/mosquitto"; then
+            kill -9 "${ws_d#/proc/}" 2>/dev/null && ws_abos=$((ws_abos + 1))
+        fi
+    done
+    [ "$ws_rest" -gt 0 ] && echo "<WARNING> $4: $ws_rest Dienst(e) erst mit kill -9 beendet."
+    [ "$ws_abos" -gt 0 ] && echo "<WARNING> $4: $ws_abos mosquitto_sub erst mit kill -9 beendet."
+    if [ -d "$ws_dd" ] && [ ! -L "$ws_dd" ]; then
+        for ws_f in "$ws_dd/mosquitto/mosquitto_sub" "$ws_dd/mosquitto/mosquitto_pub"; do
+            if [ -f "$ws_f" ] && [ ! -L "$ws_f" ]; then
+                ws_g=$(stat -c %s "$ws_f" 2>/dev/null || echo 64)
+                head -c "$ws_g" /dev/zero > "$ws_f" 2>/dev/null
+            fi
+        done
+        # Praefixschutz: nur genau der eigene Unterordner befehle/ bzw. haus/.
+        case "$ws_dd" in
+            */data/plugins/"$PDIR"/befehle|*/data/plugins/"$PDIR"/haus) rm -rf "${ws_dd:?}" ;;
+        esac
+    fi
+    if [ -e "$ws_dd/mosquitto/mosquitto_sub" ] || [ -e "$ws_dd/mosquitto/mosquitto_pub" ]; then
+        echo "<WARNING> $4: Optionsdateien liegen noch unter $ws_dd/mosquitto - von Hand entfernen."
+    fi
+}
+ws_dienst_raeumen befehlsbruecke.sh befehlsbruecke.php befehle Befehlsbruecke
+ws_dienst_raeumen ws_haus.sh ws_haus.php haus Haus-Abnehmer
+
 GEFUNDEN=0
 for D in /proc/[0-9]*; do
     P=$(basename "$D")
@@ -112,7 +168,7 @@ for D in /proc/[0-9]*; do
         echo "<OK> MQTT-Listener beendet (PID $P)."
     fi
 done
-[ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein MQTT-Listener."
+[ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein MQTT-Listener (der Vorfassung)."
 
 # ---------------------------------------------------------------
 # I3 (Durchgang 02.10.2026): der Zeitplan-Verweis heisst wifi_scanner, nicht
@@ -140,14 +196,24 @@ done
 # Deinstallation. VOR allem anderen: LoxBerry entfernt bin/plugins/<ordner>/
 # erst nach diesem Skript.
 # ---------------------------------------------------------------
+# W19 (Gruppe 14): timeout -k 5 (ein Programm, das SIGTERM nicht annimmt, hielte sonst an - Muster BLE) und als
+# loxberry statt root: der Helfer liegt im loxberry-schreibbaren bin/plugins/<ordner>/. Pfade aus der
+# Wurzelpruefung oben, kein Wert aus der Konfiguration. --leeren-alle erfasst alle retained Themen unter wifi_ng/
+# (Personen, mode/interval/enabled, die Altlast status/listener); status/befehle und Quittungen sind nie retained.
 HELFER="$BASE/bin/plugins/$PDIR/mqtt_abraeumen.pl"
 if [ -f "$HELFER" ] && command -v perl >/dev/null 2>&1; then
-    if command -v timeout >/dev/null 2>&1; then BEGRENZT="timeout 90"; else BEGRENZT=""; fi
-    AUS=$($BEGRENZT perl -I "$BASE/libs/perllib" "$HELFER" --leeren-alle 2>&1)
+    if command -v timeout >/dev/null 2>&1; then BEGRENZT="timeout -k 5 90"; else BEGRENZT=""; fi
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        AUS=$(su -s /bin/sh loxberry -c "exec $BEGRENZT perl -I '$BASE/libs/perllib' '$HELFER' --leeren-alle" < /dev/null 2>&1)
+    else
+        AUS=$($BEGRENZT perl -I "$BASE/libs/perllib" "$HELFER" --leeren-alle < /dev/null 2>&1)
+    fi
     RC=$?
     printf '%s\n' "$AUS" | sed -n '/^\(GEFUNDEN\|ERGEBNIS\|OFFEN\|KEIN\)/s/^/<INFO> MQTT: /p'
     case "$RC" in
         0) echo "<OK> Zurueckbehaltene MQTT-Themen unter wifi_ng/ geleert, beim Broker nachgelesen." ;;
+        124|137) echo "<WARNING> Das Leeren der zurueckbehaltenen Themen wurde nach 90 s abgebrochen (Rueckgabe $RC)."
+           echo "<WARNING> LoxBerry -> System -> MQTT Gateway, dort die Reste unter wifi_ng/ loeschen." ;;
         2) echo "<INFO> Der MQTT-Broker war nicht befragbar - falls noch Themen unter wifi_ng/"
            echo "<INFO> zurueckbehalten liegen: LoxBerry -> System -> MQTT Gateway, dort loeschen." ;;
         *) echo "<WARNING> Nicht alle zurueckbehaltenen Themen unter wifi_ng/ liessen sich leeren"
@@ -243,15 +309,16 @@ done
 # data/plugins/<ordner>.upgrade_sicherung liegt AUSSERHALB des Ordners, den
 # LoxBerry beim Deinstallieren loescht - genau deshalb uebersteht er ein
 # Update. Wer ihn hier nicht abraeumt, laesst Zugangsdaten liegen.
-UN_FOLDER="${3:-}"
-UN_BASE="${5:-$LBHOMEDIR}"
-if [ -n "$UN_FOLDER" ] && [ -n "$UN_BASE" ] && [ -d "$UN_BASE/data/plugins" ]; then
+# W18 (Gruppe 14): $PDIR und $BASE mit den Rueckfaellen vom Kopf (wifi_ng, lb_wurzel_suchen) statt $3/$5 allein -
+# bis 3.2.14 blieb im Rueckfall die Sicherung (mit Fritz!Box-Kennwort) liegen. Dieselbe Begruendung wie unten fuer
+# die Marke.
+if [ -d "$BASE/data/plugins" ]; then
     # .neu und .alt sind die Zwischenstaende des unteilbaren Sicherns in
     # preupgrade.sh (seit 3.2.8); nach einem Abbruch tragen sie denselben
     # Inhalt wie die Sicherung.
-    rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" \
-           "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.neu" \
-           "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.alt" 2>/dev/null
+    rm -rf "$BASE/data/plugins/$PDIR.upgrade_sicherung" \
+           "$BASE/data/plugins/$PDIR.upgrade_sicherung.neu" \
+           "$BASE/data/plugins/$PDIR.upgrade_sicherung.alt" 2>/dev/null
 fi
 
 # ---------- Die Marke der Aktualisierung ----------
@@ -259,8 +326,8 @@ fi
 # LoxBerry beim Deinstallieren wegraeumt. Bliebe sie liegen, sperrte sie eine
 # spaetere Neuinstallation dieses Plugins bis zu einer Stunde lang - der
 # Listener startete nicht, und die Oberflaeche zeigte nur den Hinweis.
-# $PDIR und $BASE stehen hier bewusst statt $UN_FOLDER/$UN_BASE: sie tragen
-# die Rueckfaelle vom Kopf dieser Datei.
+# $PDIR und $BASE tragen die Rueckfaelle vom Kopf dieser Datei (seit 3.2.15
+# auch fuer die Sicherung oben, W18).
 rm -f "$BASE/data/plugins/$PDIR.upgrade_laeuft" 2>/dev/null
 
 # I4 (Durchgang 02.10.2026): die beiden Sperrdateien des Listeners liegen

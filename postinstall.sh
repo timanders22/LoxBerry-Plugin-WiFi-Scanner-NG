@@ -39,48 +39,34 @@ echo "<INFO> Installation folder is: $ARGV4"
 ARGV5=$5 # Fifth argument is Base folder of LoxBerry
 echo "<INFO> Base folder is: $ARGV5"
 
-# Start the MQTT command listener (also started at boot via daemon script)
-LISTENER=$ARGV5/bin/plugins/$ARGV3/mqtt_listener.pl
-# c1: die Konfiguration, aus der der Uebertragungsweg gelesen wird.
-WS_CFG=$ARGV5/config/plugins/$ARGV3/wifi_scanner.cfg
+# W4 (Gruppe 14): dieselbe Torbedingung wie preinstall.sh - ohne config/plugins, data/plugins UND
+# config/system/general.json unter der Wurzel und mit einem Ordnernamen ohne Pfadtrenner wird nichts angefasst.
+# Bis 3.2.14 rechneten die Skripte ohne Argumente mit Pfaden wie /data/plugins/.upgrade_sicherung (gemessen,
+# Pruefbericht W4). plugininstall.pl uebergibt immer fuenf Argumente (Regeln/06) - das Tor gilt Handaufrufen.
+BASE="${5:-$LBHOMEDIR}"
+PDIR="${3:-wifi_ng}"
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then
+    echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt ('$BASE') - nichts angefasst."
+    exit 0
+fi
+case "$PDIR" in
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PDIR' - nichts angefasst."; exit 0 ;;
+esac
 
-# ---------------------------------------------------------------------------
-# c1 (02.10.2026): Steht der Uebertragungsweg auf UDP?
+# Gruppe 14 (3.2.15): den MQTT-Listener gibt es nicht mehr - er wird hier nicht mehr gestartet (bis 3.2.14:
+# ws_weg_udp, ws_listener_anhalten, ws_listener_starten). Befehle nimmt die Befehlsbruecke an.
+# ---------- E9 (Gruppe 14, 3.2.15): den MQTT-Listener der Vorfassung abraeumen ----------
 #
-# Nur der Wert 1 fuer UDP_ENABLE im Abschnitt [BASE] zaehlt - dieselbe Lesart
-# wie der Waechter in check.pl ("// 0") und die Oberflaeche
-# (ws_cfg(..., '0') === '1'). Fehlt die Datei oder ist sie nicht lesbar, gilt
-# MQTT, und der Listener startet wie bisher. Bis 3.2.9 fragte diese Stelle den
-# Weg gar nicht: bei UDP startete der Listener trotzdem und sendete
-# status/mode, /interval und /enabled retained - genau die Themen, die der
-# Wechsel auf UDP abraeumt. Die mitgelieferte Vorgabe steht auf UDP.
-# ---------------------------------------------------------------------------
-ws_weg_udp() {
-    [ -r "$1" ] || return 1
-    ws_udp=$(awk '
-        /^[ \t]*\[/ { im_base = ($0 ~ /^[ \t]*\[BASE\][ \t\r]*$/); next }
-        im_base && /^[ \t]*UDP_ENABLE[ \t]*=/ {
-            w = $0; sub(/^[^=]*=/, "", w); gsub(/[ \t\r"]/, "", w); v = w
-        }
-        END { print v }' "$1" 2>/dev/null)
-    [ "$ws_udp" = "1" ]
-}
-
-# Gehoert diese Prozessnummer unserem Listener?
-#
-# argv[0] ist ein perl, argv[1] ist ZEICHENGENAU unser Pfad, und es gibt kein
-# drittes Argument. Bis 3.2.6 stand hier "head -2 | grep -qxF <pfad>" - das
-# fragt nicht, WER die Datei in der Hand hat. Gemessen am 18.09.2026 in WSL
-# (Pruefung-WiFi-Scanner-NG-3.2.7/Pruefstaende/messe_koeder.sh): ein Koeder
-# "tail <listenerpfad> -f" - GNU tail vertauscht Option und Dateiname, der
-# Pfad steht damit in argv[1] - wurde von der gleichlautenden Stelle in
-# postupgrade.sh beendet (Fall K4, "Koeder IST TOT"). Dieselbe Bauart stand
-# in vier Dateien dieser Linie; alle vier sind in 3.2.7 umgestellt.
-#
-# Die Lesbarkeitsprobe zuerst: das "2>/dev/null" hing bis 3.2.6 an tr, nicht
-# an der Umleitung - ein Prozess, der waehrenddessen endet, schrieb eine
-# Schalenfehlermeldung in das Installationsprotokoll (13 Zeilen in einem
-# einzigen Lauf gemessen, Fall K5).
+# Den eigenen Listener (bin/mqtt_listener.pl) gibt es seit 3.2.15 nicht mehr; Befehle nimmt die Befehlsbruecke an.
+# Der alte Prozess laeuft beim Update aber weiter, auch nachdem purge_installation seine Datei geloescht hat - argv
+# bleibt "perl <home>/bin/plugins/<ordner>/mqtt_listener.pl". Bis 3.2.14 hielt ihn preupgrade.sh gar nicht an und
+# postupgrade.sh nur, wenn die Datei noch da war: ohne Datei im neuen Paket bliebe er stehen, hoerte weiter auf
+# wifi_ng/cmd/# und schriebe in die zurueckgespielte Konfiguration. Deshalb hier OHNE Dateipruefung, argumentweise
+# (argv[0] ein perl, argv[1] zeichengenau der Pfad, genau zwei Argumente - die Pruefung von 3.2.7), mit W4b-Form
+# (kill -9 nur, wenn derselbe Prozess noch lebt und noch unserer ist) und Nachzaehlen. Gleichlautend in preupgrade.sh
+# (direkt nach der Marke) und postinstall.sh (Rueckfall); beide Stellen zusammen pflegen.
+WS_LISTENER="$BASE/bin/plugins/$PDIR/mqtt_listener.pl"
 ws_ist_listener() {
     [ -r "/proc/$1/cmdline" ] || return 1
     ws_n=0
@@ -92,7 +78,7 @@ ws_ist_listener() {
                 perl|perl5*) ;;
                 *) return 1 ;;
             esac
-        elif [ "$ws_n" = 2 ] && [ "$ws_arg" = "$LISTENER" ]; then
+        elif [ "$ws_n" = 2 ] && [ "$ws_arg" = "$WS_LISTENER" ]; then
             ws_treffer=1
         fi
     done <<WS_ARGUMENTE
@@ -100,39 +86,34 @@ $( { tr '\0' '\n' < "/proc/$1/cmdline"; } 2>/dev/null )
 WS_ARGUMENTE
     [ "$ws_treffer" = 1 ] && [ "$ws_n" = 2 ]
 }
-
-# I5 (Durchgang 02.10.2026): angehalten und gestartet wird erst am ENDE dieses
-# Skripts, NACH dem Zurueckspielen. Bis 3.2.9 startete der Listener hier, vor
-# dem Zurueckspielen und ohne Blick auf die Upgrade-Marke - er las die
-# mitgelieferte Vorgabe und sendete status/mode, /interval und /enabled daraus
-# retained (Installer-Pruefer Nr. 5, Faelle U1 und N1). Bei liegender Marke
-# wird nur angehalten; postupgrade.sh startet ihn mit der zurueckgespielten
-# Konfiguration (Regeln/06).
-#
-# Auf das Ende WARTEN, bevor ein neuer startet: der alte haengt sonst noch am
-# Broker, und zwei Listener beantworten jeden Befehl doppelt.
-ws_listener_anhalten() {
+ws_listener_abraeumen() {
+    ws_weg=0
     for D in /proc/[0-9]*; do
         P=${D#/proc/}
-        if ws_ist_listener "$P"; then
-            kill "$P" 2>/dev/null
-            for i in 1 2 3 4 5; do
-                kill -0 "$P" 2>/dev/null || break
-                sleep 1
-            done
-            kill -9 "$P" 2>/dev/null
+        ws_ist_listener "$P" || continue
+        kill "$P" 2>/dev/null
+        for i in 1 2 3 4 5; do
+            kill -0 "$P" 2>/dev/null || break
+            sleep 1
+        done
+        kill -0 "$P" 2>/dev/null && ws_ist_listener "$P" && kill -9 "$P" 2>/dev/null
+        sleep 0.2 2>/dev/null
+        if kill -0 "$P" 2>/dev/null && ws_ist_listener "$P"; then
+            echo "<WARNING> Der MQTT-Listener der Vorfassung (PID $P) liess sich nicht beenden."
+        else
+            echo "<OK> MQTT-Listener der Vorfassung beendet (PID $P)."
+            ws_weg=$((ws_weg + 1))
         fi
     done
-}
-ws_listener_starten() {
-    [ -f "$LISTENER" ] || return 0
-    if ws_weg_udp "$WS_CFG"; then
-        echo "<INFO> MQTT-Listener nicht gestartet: der Uebertragungsweg steht auf UDP."
-        return 0
+    ws_rest=0
+    for D in /proc/[0-9]*; do
+        ws_ist_listener "${D#/proc/}" && ws_rest=$((ws_rest + 1))
+    done
+    if [ "$ws_rest" -gt 0 ]; then
+        echo "<WARNING> Es laufen noch $ws_rest MQTT-Listener der Vorfassung - nach dem Update den LoxBerry neu starten."
+    elif [ "$ws_weg" -eq 0 ]; then
+        echo "<INFO> Es lief kein MQTT-Listener der Vorfassung."
     fi
-    echo "<INFO> Starting WifiScanner MQTT listener"
-    chmod +x "$LISTENER"
-    nohup perl "$LISTENER" > /dev/null 2>&1 &
 }
 
 # I7 (Durchgang 02.10.2026): hier stand bis 3.2.9 ein Block, der fuer arp,
@@ -200,8 +181,8 @@ ws_heil() {   # ws_heil cfg|abo <datei>
         *)   return 1 ;;
     esac
 }
-NETZ_BASE="${5:-$LBHOMEDIR}"
-NETZ_PDIR="${3:-wifi_ng}"
+NETZ_BASE="$BASE"
+NETZ_PDIR="$PDIR"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 netz_zurueck() {   # netz_zurueck <datei> <pruefsumme der vorgabe> cfg|abo
     datei=$1; soll=$2; art=$3
@@ -254,13 +235,22 @@ netz_zurueck() {   # netz_zurueck <datei> <pruefsumme der vorgabe> cfg|abo
 WS_MARKE="$NETZ_BASE/data/plugins/$NETZ_PDIR.upgrade_laeuft"
 if [ -f "$WS_MARKE" ]; then
     netz_zurueck "mqtt_subscriptions.cfg" "8e8f8a5e3c6ba7c6fbfe7d6fed9f81f663067d3964501f51ad051cd65d6d5d98" abo
-    netz_zurueck "wifi_scanner.cfg" "30bcb5717482b3b0aa670ce91a023ab7100fac5db98d0e271e879555a541fc3a" cfg
-    # I5: nur anhalten - postupgrade.sh startet mit der zurueckgespielten Konfiguration.
-    ws_listener_anhalten
+    netz_zurueck "wifi_scanner.cfg" "383233087c3d801f0a7f00b1ad5aef00c2df34118dd7e7d0c403aa213d4a0354" cfg
 else
     echo "<INFO> Neuinstallation - aus Zweitschriften wird nichts zurueckgespielt."
-    ws_listener_anhalten
-    ws_listener_starten
 fi
+# E9 (Gruppe 14): Rueckfall - hat preupgrade.sh den Listener nicht erwischt, hier noch einmal (beide Zweige).
+# Seine Sperrdateien liegen NEBEN dem Datenordner und ueberleben das Update; sein Protokoll bleibt beim Update
+# liegen (log/ wird nur bei "all" geloescht) - beide werden hier einmal entfernt.
+ws_listener_abraeumen
+rm -f "$BASE/data/plugins/$PDIR.listener.lock" "$BASE/data/plugins/$PDIR.listener_start.lock" 2>/dev/null
+if [ -f "$BASE/log/plugins/$PDIR/mqtt_listener.log" ]; then
+    rm -f "$BASE/log/plugins/$PDIR/mqtt_listener.log" 2>/dev/null \
+        && echo "<INFO> Das Protokoll des entfallenen MQTT-Listeners (mqtt_listener.log) ist entfernt."
+fi
+# Gruppe 14: Befehlsbruecke, Auftragsprozess und Haus-Abnehmer ausfuehrbar. KEIN Start hier - die Waechter in
+# cron.01min starten binnen einer Minute, und nur mit ihrem Haken (ab Werk aus).
+chmod 755 "$BASE/bin/plugins/$PDIR/befehlsbruecke.sh" "$BASE/bin/plugins/$PDIR/ws_auftrag.sh" \
+          "$BASE/bin/plugins/$PDIR/ws_haus.sh" 2>/dev/null
 
 exit 0

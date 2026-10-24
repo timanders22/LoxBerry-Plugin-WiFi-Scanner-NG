@@ -9,6 +9,49 @@ Holland](https://github.com/Gagi2k/LoxBerry-Plugin-WifiScanner) (Apache
 License 2.0). Herkunft und die vollständige Liste der Änderungen stehen in
 [NOTICE](NOTICE).
 
+## Neu in 3.2.15
+
+Werte über das MQTT-Gateway in einfache Virtuelle Eingänge, Befehle über die gemeinsame Befehlsbrücke statt des
+eigenen Listeners, der HTTP-Endpunkt nur noch auf Wunsch und mit Merkwort – dazu Korrekturen aus einer Prüfung.
+
+* **Befehlsbrücke statt MQTT-Listener:** Befehle aus Loxone gehen als `publish wifi_ng/befehl/<name> <wert>` an den
+  UDP-Eingang des MQTT-Gateways und von dort an die Befehlsbrücke: `scan jetzt|beides|fritzbox|ping`,
+  `modus beides|fritzbox|ping`, `takt 1|3|5|10|15|30|60`, `suche 0|1`. Haken „Befehle über MQTT annehmen“ im Reiter
+  MQTT, ab Werk aus; „Suche an/aus“ braucht zusätzlich „Eingreifende Befehle über MQTT annehmen“. Antwort in
+  `wifi_ng/befehl/<name>/quittung`, nie retained. Die Themen `wifi_ng/cmd/…` gelten nicht mehr; `bin/mqtt_listener.pl`
+  und `daemon/daemon` sind entfallen, ein laufender Listener der Vorfassung wird beim Update beendet, seine
+  Sperrdateien und sein Protokoll werden entfernt, ein zurückbehaltenes `wifi_ng/status/listener` geleert. Neue
+  Abhängigkeit: `mosquitto-clients`. Wächter jede Minute (`cron.01min`).
+* **Werte:** `status/mode`, `/interval` und `/enabled` sendet jetzt der Suchlauf (retained) und das Plugin nach jeder
+  Änderung. Eine Person ohne Aussage (Suche gestört) bekommt **-1** retained statt ihres alten Werts (`status/ok`
+  steht dann auf 0); über UDP bleibt es bei „keine Zeile“. Reiter *Einbindung in Loxone*: Namenstabelle mit
+  Kopierknopf und den Haken für Gateway-Fassung 2 (6 Haken, `status/ok` Noncached), Befehlstabelle, Knopf *Vorlage
+  MQTT-Befehle*. Die Vorlage „WifiScanner Anwesenheit“ (Virtueller HTTP-Eingang an `http://localhost`) entfällt.
+* **Neue Anlagen senden über MQTT** (ab Werk bisher UDP); ein Update behält den Weg der Anlage.
+* **HTTP-Endpunkt nur mit Haken:** „HTTP-Endpunkt für Loxone annehmen“ (Reiter Einbindung, *Bestehende Anlagen*), neu ab
+  Werk aus, beim Update an, wenn schon ein Merkwort da war. **Auch die Abfrage braucht jetzt das Merkwort**
+  (`?token=…`) – ein Loxone-Eingang, der die Zeile ohne Merkwort holt, bekommt 403. `aktion=listener` antwortet 409
+  `ERR=ENTFALLEN`; das Feld `LISTENER` meldet jetzt „Befehlsbrücke bereit“.
+* **Schnellprüfung bei Bluetooth-Weggang** (ab Werk aus): WiFi-Scanner-NG hört auf `haus/anwesenheit/<person>`
+  (BLE-Scanner NG) und sucht einmal sofort, wenn eine Person von 1 auf 0 geht – höchstens einmal je Minute, nur bei
+  eingeschalteter regelmäßiger Suche, mit Schutz gegen Rückkopplung; schweigt die Quelle, sagt es der Reiter Test.
+* **Weckpaket** (ab Werk aus): vor jeder aktiven Suche eine DNS-SD-Anfrage an Port 5353 einer bekannten IPv4-Adresse.
+  Ob es Telefonen im Ruhezustand hilft, ist nicht gemessen.
+* **Reiter Test:** neue Zeilen für Sprachdateien (Schlüssel und Platzhalter), Befehlsbrücke, Reste des Listeners,
+  Modusregel, Namenstabelle, Endpunkt, Vorlage MQTT-Befehle, Werte, die die Suche verändert läse, und die
+  Schnellprüfung.
+* **Korrekturen:** Fritz!Box mit nur einem Untergerät oder Hosts-Dienst im zweiten Untergerät (TR-064) wird gefunden;
+  ohne eingetragenen Miniserver bricht der Lauf nur noch bei UDP ab; IPv6-Adressen über `ping -6`; „Gefundener
+  Broker“ aus `general.json` (LoxBerry 3/4); Selbstheilung der Konfiguration unteilbar mit 0600; sichtbares `?>` im
+  Reiter Einbindung entfernt; Anführungszeichen in Adressen werden beanstandet statt still entfernt; Backslash und
+  Leerzeichen am Komma im Fritz!Box-Zugang werden beanstandet; Personen „status“/„befehl“ werden beanstandet; Reiter
+  Logdateien über LoxBerry; Hilfeverweis auf die Plugin-Seite; Diagnose mit `perl -I libs/perllib` und derselben
+  Werkzeugsuche wie der Reiter Test; Hakenskripte prüfen die LoxBerry-Wurzel, die Deinstallation leert als
+  `loxberry` mit hartem Zeitlimit; Protokolle werden beim Update nicht mehr gesichert und zurückkopiert.
+* **Wer die Musterseite schon gebaut hat:** die Eingänge als einfache Virtuelle Eingänge (Namen gleich), eine Formel
+  „Beispiel da (WLAN)“ vor „Jemand zu Hause“, En der Analogwertvalidierung an `wifi_ng_status_enabled`, die vier
+  Befehle an den Ausgang „LoxBerry MQTT-Gateway“ – Einzelheiten in der Baustein-Liste.
+
 ## Neu in 3.2.14
 
 Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) mit einem Bild und
@@ -161,28 +204,29 @@ unter ihrem bisherigen Thema, damit ihr letzter Wert nicht stehen bleibt.
 nach einem Neustart des Miniservers steht der letzte Stand sofort wieder da:
 
 ```
-wifi_ng/<Person>        1 = anwesend, 0 = abwesend, - = ausgetragen
+wifi_ng/<Person>        1 = anwesend, 0 = abwesend, -1 = keine Aussage, - = ausgetragen
 ```
 
 Fällt die Suche aus — Fritz!Box nicht erreichbar oder antwortet unbrauchbar,
-Anmeldung abgewiesen, beide Wege ausgeschaltet —, gehen die Personen in
-diesem Lauf gar nicht hinaus: es bleibt der letzte Messwert stehen, und
+Anmeldung abgewiesen, beide Wege ausgeschaltet —, bekommen die Personen
+ohne Messung seit 3.2.15 `-1` (keine Aussage, retained), und
 `wifi_ng/status/ok` steht mit dem Grund auf 0. In Loxone gilt die
 Anwesenheit deshalb nur zusammen mit `ok`. Ein ausgefallener Lauf ist kein
 „alle weg“.
 
 **UDP** gibt es zusätzlich, für Aufbauten ohne MQTT-Gateway. Gesendet wird
 `<Name>:<0|1>` an den in den Einstellungen gewählten Port (Vorgabe 7007).
-Bei UDP läuft der MQTT-Listener nicht: weder Systemstart noch Installation,
-Endpunkt oder der Knopf im Reiter *Test* starten ihn, und der Wechsel auf UDP
-hält ihn an. Der Wechsel zurück auf MQTT startet ihn wieder.
+Über UDP geht eine Person ohne Messung gar nicht hinaus. Der Wechsel auf UDP
+leert die zurückbehaltenen Themen unter `wifi_ng/`. Seit 3.2.15 steht eine
+neue Anlage ab Werk auf MQTT.
 
 Der Reiter *Einbindung in Loxone* führt eine **Baustein-Liste** zum Nachbauen, mit einem
-Kasten „So übernehmen Sie diese Seite“: die Eingänge der Vorlage, eine ODER-Kette über die
-Personen (je ODER höchstens zwei Eingänge), eine Ausschaltverzögerung, „Alle weg (gemessen)“
+Kasten „So übernehmen Sie diese Seite“: einfache Virtuelle Eingänge nach der Namenstabelle, je
+Person eine Formel (-1 zählt nicht als „da“), eine ODER-Kette über die Formeln (je ODER höchstens
+zwei Eingänge), eine Ausschaltverzögerung, „Alle weg (gemessen)“
 nur bei `status/ok` = 1, ein Lebenszeichen über den Laufzähler (Analogwertvalidierung), eine
-Meldung erst nach 5 Minuten Störung, zwei Status-Bausteine und drei Tasten für die Steuerung
-über die Steuervorlage.
+Meldung erst nach 5 Minuten Störung, zwei Status-Bausteine und drei Tasten mit vier Befehlen an
+die Befehlsbrücke.
 
 Die Bausteine dieser Liste stehen fertig verbunden auf der Seite „WiFi-Scanner-NG“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt), einer gemeinsamen
@@ -190,31 +234,31 @@ Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
 ## Steuerung per MQTT aus Loxone
 
-Der Listener hört auf `wifi_ng/cmd/#` (nur, wenn der Übertragungsweg MQTT ist):
+Seit 3.2.15 nimmt die gemeinsame **Befehlsbrücke** die Befehle an (der eigene Listener auf `wifi_ng/cmd/#` ist
+entfallen). Loxone sendet über einen Virtuellen Ausgang an den UDP-Eingang des MQTT-Gateways
+`publish wifi_ng/befehl/<name> <wert>` (nie retained); die Brücke quittiert unter `wifi_ng/befehl/<name>/quittung`.
 
-| Thema | Nutzlast | Wirkung |
-|---|---|---|
-| `wifi_ng/cmd/scan` | — oder ein Modus | Sofort einen Suchlauf starten |
-| `wifi_ng/cmd/mode` | `0`/`both`, `1`/`fritzbox`, `2`/`ping` | Suchweg umstellen (wird gespeichert) |
-| `wifi_ng/cmd/interval` | `1,3,5,10,15,30,60` | Takt in Minuten |
-| `wifi_ng/cmd/enable` | `0` / `1` | Regelmäßiges Suchen an oder aus |
+| Thema | Nutzlast | Wirkung | Haken |
+|---|---|---|---|
+| `wifi_ng/befehl/scan` | `jetzt`, `beides`, `fritzbox`, `ping` | Sofort einen Suchlauf starten | Befehle über MQTT annehmen |
+| `wifi_ng/befehl/modus` | `beides`, `fritzbox`, `ping` | Suchweg umstellen (wird gespeichert) | dto. |
+| `wifi_ng/befehl/takt` | `1,3,5,10,15,30,60` | Takt in Minuten (keine Sperre) | dto. |
+| `wifi_ng/befehl/suche` | `0` / `1` | Regelmäßiges Suchen an oder aus | dazu „Eingreifende Befehle über MQTT annehmen“ |
 
-Der aktuelle Stand wird retained nach `wifi_ng/status/#` veröffentlicht
-(`mode`, `interval`, `enabled`); `mode` ist `-1`, wenn beide Suchwege aus
-sind. Befehle bitte **nicht retained** senden — ein zurückbehaltener Befehl
-wird verworfen. Derselbe Wert binnen 60 Sekunden ändert nichts; ein
-unveränderter Modus stößt keinen Suchlauf an.
+Beide Haken stehen im Reiter *MQTT* und sind ab Werk aus – jeder im Heimnetz kann über den UDP-Eingang des
+Gateways Befehle senden. Der Knopf *Vorlage MQTT-Befehle* im Reiter *Einbindung in Loxone* liefert die Befehle als
+Virtuellen Ausgang. Der Stand kommt retained über `wifi_ng/status/mode`, `/interval`, `/enabled` (vom Suchlauf und
+nach jeder Änderung); `mode` ist `-1`, wenn beide Suchwege aus sind.
 
-Ohne MQTT geht die Steuerung über den eigenen Endpunkt: der Knopf *Vorlage der
-Steuerbefehle erzeugen* im Reiter *Einbindung in Loxone* liefert `VQ_wifiscanner_steuern.xml`
-für einen Virtuellen Ausgang (Sofort-Suche, regelmäßige Suche ein/aus, schneller Takt; Adresse
-und Merkwort sind eingetragen). Nach „Neues Merkwort erzeugen“ die Vorlage neu erzeugen.
+Bestehende Anlagen ohne MQTT steuern über den eigenen Endpunkt – seit 3.2.15 nur mit dem Haken „HTTP-Endpunkt für
+Loxone annehmen“ und mit Merkwort auch für die Abfrage; die *Steuervorlage (HTTP)* steht im zugeklappten Abschnitt
+*Bestehende Anlagen*. Nach „Neues Merkwort erzeugen“ die Vorlage neu erzeugen.
 
 ## Zeitplan
 
 Kurze Abstände erkennen schneller, erzeugen aber mehr Netzverkehr. Drei bis
 fünf Minuten sind ein guter Mittelweg. Ist das regelmäßige Suchen aus, scannt
-das Plugin nur noch auf Befehl — aus Loxone per MQTT oder über den Endpunkt,
+das Plugin nur noch auf Befehl — aus Loxone über die Befehlsbrücke oder den Endpunkt,
 oder von Hand im Reiter *Test*; ein Lauf aus dem Zeitplan sucht dann nicht.
 `OK` am Endpunkt geht auf 0, sobald der letzte Lauf älter ist als das
 Dreifache des Takts.

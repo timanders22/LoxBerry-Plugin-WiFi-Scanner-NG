@@ -5,7 +5,8 @@
  *
  * Loest die alte Perl-CGI-Oberflaeche mit HTML::Template ab.
  * Die Konfigurationsdatei bleibt im Config::Simple-Format,
- * damit check.pl und mqtt_listener.pl ohne Anpassung weiterlaufen.
+ * damit check.pl ohne Anpassung weiterlaeuft (der eigene MQTT-Listener ist
+ * mit 3.2.15 entfallen - Befehle nimmt die Befehlsbruecke an).
  *
  * Kompatibel mit PHP 7.4 und PHP 8.x (LoxBerry 3.x/4.x).
  *
@@ -117,7 +118,7 @@ if (ws_upgrade_laeuft()) {
     $ws_war_post = (isset($_SERVER['REQUEST_METHOD'])
                     && $_SERVER['REQUEST_METHOD'] === 'POST');
     if (class_exists('LBWeb', false)) {
-        LBWeb::lbheader(ws_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
+        LBWeb::lbheader(ws_t('ALLG.TITEL'), ws_hilfe_url(), 'help.html');
     }
     echo '<div class="smw">' . "\n"
        . '<h1>' . ws_e(ws_t('ALLG.TITEL')) . '</h1>' . "\n"
@@ -152,7 +153,10 @@ $ws_cfg = ws_config_read();
 $ws_zu_schreiben = false;
 foreach (ws_vorgaben() as $ws_vk => $ws_vv) {
     if (!array_key_exists($ws_vk, $ws_cfg)) {
-        $ws_cfg[$ws_vk] = $ws_vv;
+        /* Gruppe 14 (E6): ENDPUNKT_EIN nicht auf die Werksvorgabe 0 setzen, sondern nach der Uebergangsregel -
+         * sonst schloesse der erste Seitenaufruf nach einem Update den Endpunkt, falls postupgrade.sh den
+         * Schluessel nicht schreiben konnte. */
+        $ws_cfg[$ws_vk] = $ws_vk === 'BASE.ENDPUNKT_EIN' ? ws_uebergang_wert($ws_vk, $ws_cfg) : $ws_vv;
         $ws_zu_schreiben = true;
     }
 }
@@ -355,15 +359,14 @@ function ws_ausgetragen_abraeumen(array $alt, array $neu)
 
 /**
  * I6 (Durchgang 02.10.2026, Entscheidungen 3 und 26): beim Wechsel von MQTT auf
- * UDP wird der Listener angehalten (er sendete sonst beim naechsten Start
- * status/mode, /interval und /enabled wieder retained), und die
- * zurueckbehaltenen Themen unter wifi_ng/ werden geleert, mit Nachlesen. Bis
- * 3.2.9 blieben sie mit dem letzten Wert stehen (Pruefer mqtt Nr. 5).
+ * UDP werden die zurueckbehaltenen Themen unter wifi_ng/ geleert, mit
+ * Nachlesen. Bis 3.2.9 blieben sie mit dem letzten Wert stehen (Pruefer mqtt
+ * Nr. 5). Den Listener, der bis 3.2.14 zuerst angehalten wurde, gibt es nicht
+ * mehr; check.pl und --status senden bei UDP nichts.
  */
 function ws_wechsel_auf_udp()
 {
     global $ws_meldungen, $ws_misslungen;
-    ws_listener_stop();
     list($rc, $aus) = ws_mqtt_aufraeumen('--leeren-alle');
     $n = 0;
     foreach ($aus as $z) {
@@ -374,6 +377,16 @@ function ws_wechsel_auf_udp()
     } else {
         $ws_misslungen[] = sprintf(ws_t('MELD.UDP_NICHT_ABGERAEUMT'), (int) $rc,
                                    ws_e(implode(' / ', array_slice($aus, -2))));
+    }
+}
+
+/** Gruppe 14 (E7): status/mode, /interval, /enabled nach einer Aenderung senden (bin/ws_auftrag.sh status ->
+ *  mqtt_abraeumen.pl --status). Ersetzt den Neustart des Listeners; Satz nur bei Misserfolg. */
+function ws_status_melden()
+{
+    global $ws_misslungen;
+    if (DIRECTORY_SEPARATOR !== '\\' && !ws_auftrag_starten('status')) {
+        $ws_misslungen[] = ws_t('MELD.STATUS_NICHT');
     }
 }
 
@@ -454,6 +467,7 @@ if (isset($_SERVER['REQUEST_METHOD'])
     $neu['BASE.FRITZBOX_ENABLE'] = isset($_POST['fritz_enable']) ? '1' : '0';
     $neu['BASE.ACTIVE_SCAN']     = isset($_POST['active_scan']) ? '1' : '0';
     $neu['BASE.USE_CACHE']       = isset($_POST['use_cache']) ? '1' : '0';
+    $neu['BASE.WECKPAKET']       = isset($_POST['weckpaket']) ? '1' : '0';   // V1 (Gruppe 14), ab Werk aus
 
     $ws_cron_ein = trim(ws_post_text('cron'));
     if (in_array($ws_cron_ein, ws_takte(), true)) {
@@ -470,14 +484,10 @@ if (isset($_SERVER['REQUEST_METHOD'])
         $ws_falsch[] = 'ping_cmd';
     }
 
-    /* Namen und Adresslisten: nur Steuerzeichen und Anfuehrungszeichen raus,
-     * wie bisher. preg_replace gibt bei ungueltigem UTF-8 null zurueck; ohne
-     * den Rueckfall wuerde daraus ein leerer Wert. */
-    $saeubern = function ($s) {
-        $r = preg_replace('/[\x00-\x1F\x7F"\']+/u', '', (string) $s);
-        if ($r === null) { $r = preg_replace('/[\x00-\x1F\x7F"\']+/', '', (string) $s); }
-        return trim((string) $r);
-    };
+    /* W26/E12 (Gruppe 14): Anfuehrungszeichen in der Adressliste werden nicht mehr still entfernt - auch nicht
+     * ein Paar am Rand. ws_adressen_zerlegen() beanstandet sie als "keine gueltige Adresse" (Entscheidung 19:
+     * nicht zurechtbiegen). Bis 3.2.14 wurde 'aa:b"b:cc:dd:ee:ff' still zu einer gueltigen MAC gebogen.
+     * Steuerzeichen fallen weiter still weg ($ohne_steuer, unten). */
     /* Frage 4 (Durchgang 02.10.2026): im NAMEN nur noch Steuerzeichen still
      * entfernen - Anfuehrungszeichen bleiben stehen und werden unten von
      * ws_wert_pruefen() beanstandet (Feld markiert, Eingabe zurueck). */
@@ -557,7 +567,7 @@ if (isset($_SERVER['REQUEST_METHOD'])
             continue;   // ausdruecklich abgewaehlt
         }
         $name = $ohne_steuer($name);
-        $liste = $saeubern(isset($_POST['macs'][$i]) && is_string($_POST['macs'][$i]) ? $_POST['macs'][$i] : '');
+        $liste = $ohne_steuer(isset($_POST['macs'][$i]) && is_string($_POST['macs'][$i]) ? $_POST['macs'][$i] : '');
         if ($name === '' && $liste === '') {
             continue;   // leere Anlegezeile - kein Verlust, keine Meldung
         }
@@ -570,7 +580,8 @@ if (isset($_SERVER['REQUEST_METHOD'])
             $ws_falsch[] = 'macs[' . (int) $i . ']';
         }
         if ($ws_sonst) {
-            $ws_mangel[] = sprintf(ws_t('EINST.M_ADR_ABGEWIESEN'), ws_e($ws_wer), ws_e(implode(', ', $ws_sonst)));
+            $ws_mangel[] = sprintf(ws_t('EINST.M_ADR_ABGEWIESEN'), ws_e($ws_wer), ws_e(implode(', ', $ws_sonst)))
+                         . (strpbrk(implode('', $ws_sonst), '"\'') !== false ? ' ' . ws_t('EINST.M_ANFUEHRUNG') : '');
             $ws_falsch[] = 'macs[' . (int) $i . ']';
         }
         if ($name === '') {
@@ -620,7 +631,7 @@ if (isset($_SERVER['REQUEST_METHOD'])
         $ws_fehler[] = ws_t('EINST.B_KOPF') . '<ul><li>' . implode('</li><li>', $ws_mangel) . '</li></ul>';
         $ws_eingaben = ws_eingaben_sammeln('settings',
             array('cron', 'ping_cmd', 'fritzbox', 'fritzbox_port', 'fritzbox_user'),
-            array('enabled', 'fritz_enable', 'active_scan', 'use_cache', 'fritz_pass_loeschen'), $ws_falsch);
+            array('enabled', 'fritz_enable', 'active_scan', 'use_cache', 'fritz_pass_loeschen', 'weckpaket'), $ws_falsch);
     } elseif (ws_config_write($neu)) {
         ws_cron_apply($neu['BASE.ENABLED'], $neu['BASE.CRON']);
         $ws_meldungen[] = ws_t('MELD.ZEITPLAN_NEU');
@@ -629,19 +640,13 @@ if (isset($_SERVER['REQUEST_METHOD'])
         foreach (ws_doppelte_adressen(ws_users($neu)) as $ws_adr => $ws_wer) {
             $ws_hinweise[] = sprintf(ws_t('EINST.M_DOPPELT'), ws_e($ws_adr), ws_e(implode(', ', $ws_wer)));
         }
-        /* O9: der Listener-Satz nur bei MQTT, und "neu gestartet" nur, wenn er
-         * danach laeuft - sonst steht er unter "nicht gelungen" (bis 3.2.9 stand
-         * der Erfolgssatz auch neben "MQTT-Listener: laeuft nicht"). */
+        /* Gruppe 14 (E7): statt den Listener neu zu starten, gehen status/mode, /interval und /enabled sofort
+         * ueber mqtt_abraeumen.pl --status hinaus (bin/ws_auftrag.sh status). */
         if (ws_cfg($neu, 'BASE.UDP_ENABLE', '0') !== '1') {
             $ws_ab = ws_ausgetragen_abraeumen($ws_alt, $neu);
             foreach ($ws_ab['ok'] as $ws_x) { $ws_meldungen[] = $ws_x; }
             foreach ($ws_ab['nicht'] as $ws_x) { $ws_misslungen[] = $ws_x; }
-            $ws_lpid = ws_listener_restart();
-            if ($ws_lpid) {
-                $ws_meldungen[] = sprintf(ws_t('MELD.LISTENER_NEU'), (int) $ws_lpid);
-            } else {
-                $ws_misslungen[] = ws_t('MELD.LISTENER_NICHT');
-            }
+            ws_status_melden();
         }
         $ws_cfg = ws_config_read();
         $ws_fmt = ws_formtoken($ws_cfg);
@@ -661,6 +666,10 @@ if (isset($_SERVER['REQUEST_METHOD'])
     $ws_mangel = array();
     $ws_falsch = array();
     $neu['BASE.UDP_ENABLE'] = (ws_post_text('out_way') === 'udp') ? '1' : '0';
+    // Gruppe 14: Befehlsbruecke (zwei Haken, E1/E3) und V3 - alle ab Werk aus.
+    $neu['BASE.BEFEHLE_MQTT_EIN']        = isset($_POST['befehle_mqtt_ein']) ? '1' : '0';
+    $neu['BASE.BEFEHLE_EINGREIFEND_EIN'] = isset($_POST['befehle_eingreifend_ein']) ? '1' : '0';
+    $neu['BASE.HAUS_ABNEHMER']           = isset($_POST['haus_abnehmer']) ? '1' : '0';
     $ws_up = trim(ws_post_text('udpport'));
     if (ws_wert_pruefen('BASE.PORT', $ws_up) === '') {
         $neu['BASE.PORT'] = $ws_up;
@@ -670,7 +679,8 @@ if (isset($_SERVER['REQUEST_METHOD'])
     }
     if ($ws_mangel) {
         $ws_fehler[] = ws_t('EINST.B_KOPF') . '<ul><li>' . implode('</li><li>', $ws_mangel) . '</li></ul>';
-        $ws_eingaben = ws_eingaben_sammeln('mqtt', array('out_way', 'udpport'), array(), $ws_falsch);
+        $ws_eingaben = ws_eingaben_sammeln('mqtt', array('out_way', 'udpport'),
+            array('befehle_mqtt_ein', 'befehle_eingreifend_ein', 'haus_abnehmer'), $ws_falsch);
     } elseif (ws_config_write($neu)) {
         $ws_meldungen[] = ws_t('MELD.WEG_GESPEICHERT');
         if ($neu['BASE.UDP_ENABLE'] === '1') {
@@ -678,12 +688,14 @@ if (isset($_SERVER['REQUEST_METHOD'])
                 ws_wechsel_auf_udp();
             }
         } else {
-            $ws_lpid = ws_listener_restart();
-            if ($ws_lpid) {
-                $ws_meldungen[] = sprintf(ws_t('MELD.LISTENER_NEU'), (int) $ws_lpid);
-            } else {
-                $ws_misslungen[] = ws_t('MELD.LISTENER_NICHT');
-            }
+            ws_status_melden();
+        }
+        /* Bruecke und Haus-Abnehmer gleich schalten (Bauart sp_bruecke_schalten); sonst holt der Waechter in
+         * cron.01min es binnen einer Minute nach. */
+        foreach (array(array(ws_bruecke_schalten(), 'BEFEHL'), array(ws_haus_schalten(), 'HAUS')) as $ws_sr) {
+            $ws_satz = ws_schalten_satz($ws_sr[0], $ws_sr[1]);
+            if ($ws_satz === '') { continue; }
+            if (substr($ws_sr[0][0], -5) === '_fehl') { $ws_misslungen[] = ws_e($ws_satz); } else { $ws_meldungen[] = ws_e($ws_satz); }
         }
         $ws_cfg = ws_config_read();
         $ws_fmt = ws_formtoken($ws_cfg);
@@ -691,6 +703,23 @@ if (isset($_SERVER['REQUEST_METHOD'])
         $ws_fehler[] = sprintf(ws_t('FEHLER.CONFIG_SCHREIBEN'), ws_e($ws_p['config']));
     }
     $ws_tab = 'tab-mqtt';
+}
+
+/* ---------------- HTTP-Endpunkt an/aus (Gruppe 14, E6) ----------------
+ * Reiter Einbindung, zugeklappt "Bestehende Anlagen". Nur dieser eine Schluessel. */
+if (isset($_SERVER['REQUEST_METHOD'])
+        && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['endpunkt_save'])) {
+    $neu = ws_config_read();
+    $neu['BASE.ENDPUNKT_EIN'] = isset($_POST['endpunkt_ein']) ? '1' : '0';
+    if (ws_config_write($neu)) {
+        $ws_meldungen[] = ws_e(ws_t($neu['BASE.ENDPUNKT_EIN'] === '1' ? 'MELD.ENDPUNKT_EIN' : 'MELD.ENDPUNKT_AUS'));
+        $ws_cfg = ws_config_read();
+        $ws_fmt = ws_formtoken($ws_cfg);
+    } else {
+        $ws_fehler[] = sprintf(ws_t('FEHLER.CONFIG_SCHREIBEN'), ws_e($ws_p['config']));
+    }
+    $ws_eingaben = array('formular' => 'endpunkt', 'werte' => array(), 'zeilen' => array(), 'falsch' => array());
+    $ws_tab = 'tab-loxone';
 }
 
 /* ---------------- Merkwort neu erzeugen ----------------
@@ -718,23 +747,14 @@ if (isset($_SERVER['REQUEST_METHOD'])
     $ws_a = (string) $_POST['aktion'];
     if ($ws_a === 'scan') {
         $bin = $ws_p['bindir'] . '/check.pl';
-        if (is_file($bin)) {
-            // C13: --auftrag - sucht auch bei ausgeschaltetem regelmaessigem Suchen.
-            @exec('nohup perl ' . escapeshellarg($bin) . ' --auftrag > /dev/null 2>&1 &');
+        if (!is_file($bin)) {
+            $ws_fehler[] = sprintf(ws_t('T.NICHT_GEFUNDEN'), 'check.pl', ws_e($bin));
+        } elseif (ws_auftrag_starten('scan')) {
+            /* C13: --auftrag - sucht auch bei ausgeschaltetem regelmaessigem Suchen. Seit 3.2.15 ueber
+             * bin/ws_auftrag.sh: der Suchlauf erbt die Deskriptoren des Apache-Kindes nicht mehr (F2). */
             $ws_meldungen[] = ws_t('TEST.M_SCAN');
         } else {
-            $ws_fehler[] = sprintf(ws_t('T.NICHT_GEFUNDEN'), 'check.pl', ws_e($bin));
-        }
-    } elseif ($ws_a === 'restart' && ws_cfg($ws_cfg, 'BASE.UDP_ENABLE', '0') === '1') {
-        /* c1 (02.10.2026): bei UDP wird der Listener nicht gebraucht und nicht
-         * gestartet (bis 3.2.9 startete dieser Knopf ihn trotzdem). */
-        $ws_hinweise[] = ws_t('TEST.M_RESTART_UDP');
-    } elseif ($ws_a === 'restart') {
-        $ws_pid = ws_listener_restart();
-        if ($ws_pid) {
-            $ws_meldungen[] = sprintf(ws_t('TEST.M_RESTART'), (int) $ws_pid);
-        } else {
-            $ws_fehler[] = ws_t('T.LISTENER_TOT');
+            $ws_fehler[] = ws_t('TEST.M_AUFTRAG_FEHLT');
         }
     } else {
         $ws_fehler[] = ws_t('TEST.M_UNBEKANNT');
@@ -746,10 +766,12 @@ if (isset($_SERVER['REQUEST_METHOD'])
  * Die beiden Downloads - VOR lbheader(), weil sie eigene Kopfzeilen setzen
  * ================================================================== */
 
-/* ---------------- Loxone-Vorlage ---------------- */
+/* ---------------- Vorlage MQTT-Befehle (Gruppe 14, 3.8) ----------------
+ * Virtueller Ausgang an den UDP-Eingang des MQTT-Gateways, Befehle an die Befehlsbruecke. Die HTTP-Vorlage
+ * "WifiScanner Anwesenheit" (VirtualInHttp an http://localhost) ist entfallen (E3). */
 if (isset($_SERVER['REQUEST_METHOD'])
-        && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage'])) {
-    list($ws_vname, $ws_vinhalt) = ws_vorlage();
+        && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_mqtt'])) {
+    list($ws_vname, $ws_vinhalt) = ws_vorlage_mqtt_out($ws_cfg);
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $ws_vname . '"');
     header('Content-Length: ' . strlen($ws_vinhalt));
@@ -806,9 +828,8 @@ if (isset($_SERVER['REQUEST_METHOD'])
  * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
  * nicht erst gelesen.
  *
- * Und danach wird der Dienst NACHGEZOGEN. Bis 3.1.11 wurden Zeitplan und
- * Listener beim Zurueckspielen nicht angefasst, waehrend die Meldung
- * behauptete, beides sei geschehen. */
+ * Und danach wird der Dienst NACHGEZOGEN: Zeitplan und (seit 3.2.15, ohne
+ * Listener) die Zustaende status/mode, /interval, /enabled. */
 if (isset($_SERVER['REQUEST_METHOD'])
         && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ws_zurueck'])) {
     if (!isset($_FILES['ws_sicherung']) || !is_array($_FILES['ws_sicherung'])
@@ -843,12 +864,7 @@ if (isset($_SERVER['REQUEST_METHOD'])
                 $ws_ab = ws_ausgetragen_abraeumen($ws_alt_r, $ws_neu);
                 foreach ($ws_ab['ok'] as $ws_x) { $ws_meldungen[] = $ws_x; }
                 foreach ($ws_ab['nicht'] as $ws_x) { $ws_misslungen[] = $ws_x; }
-                $ws_lpid = ws_listener_restart();
-                if ($ws_lpid) {
-                    $ws_meldungen[] = ws_t('EINST.SICH_DIENST_LAEUFT');
-                } else {
-                    $ws_misslungen[] = ws_t('EINST.SICH_DIENST_AUS');
-                }
+                ws_status_melden();
             }
             $ws_cfg = ws_config_read();
             $ws_fmt = ws_formtoken($ws_cfg);
@@ -893,12 +909,11 @@ $ws_zeigen[$ws_naechste + 1] = array('schluessel' => '', 'name' => '', 'macs' =>
 
 $ws_log_file = ws_log_file('wifi_scanner');
 $ws_log_lines = ws_log_tail($ws_log_file);
-$ws_listener_log = ws_log_file('mqtt_listener');
 
 $ws_zustand = ws_zustand_lesen();
 $ws_alter   = ws_zustand_alter($ws_zustand);
 $ws_frisch  = ws_zustand_frisch($ws_cfg, $ws_zustand);
-$ws_pid     = ws_listener_running();
+$ws_bbz    = ws_bruecke_zustand($ws_cfg);   // Gruppe 14: Befehlsbruecke statt Listener
 $ws_cron    = ws_cron_current();
 $ws_ein     = ws_cfg($ws_cfg, 'BASE.ENABLED', '0') === '1';
 $ws_udp     = ws_cfg($ws_cfg, 'BASE.UDP_ENABLE', '0') === '1';
@@ -907,7 +922,7 @@ $ws_fassung = ws_mqtt_fassung();
 // WICHTIG: LBWeb::lbheader() setzt SDK-Globale - deshalb ueberall ws_-Praefix.
 $ws_frame = class_exists('LBWeb', false);
 if ($ws_frame) {
-    LBWeb::lbheader(ws_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
+    LBWeb::lbheader(ws_t('ALLG.TITEL'), ws_hilfe_url(), 'help.html');
 }
 /* O8: die Seite wird gepuffert; ws_formzeile_einsetzen() zaehlt am Ende die
  * Formulare im fertigen HTML und setzt die Zeile im Reiter Test ein. */
@@ -1067,8 +1082,8 @@ function ws_person_zustand(array $z, $name, $frisch)
     <td><b><?= $ws_ein ? ws_e(ws_t('ALLG.EIN')) : ws_e(ws_t('ALLG.AUS')) ?></b><?php if ($ws_ein) { ?>, <?php printf(ws_t('KOPF.ALLE_MINUTEN'), '<b>' . ws_e(ws_cfg($ws_cfg, 'BASE.CRON', '3')) . '</b>'); ?><?php } ?></td></tr>
 <tr><td><?= ws_e(ws_t('KOPF.ZEITPLAN')) ?></td>
     <td><?= $ws_cron !== '' ? ws_e($ws_cron) : '<b>' . ws_e(ws_t('KOPF.KEINE_VERKNUEPFUNG')) . '</b>' ?></td></tr>
-<tr><td><?= ws_e(ws_t('KOPF.LISTENER')) ?></td>
-    <td><?= $ws_pid ? ws_e(ws_t('ALLG.LAEUFT')) . ' (PID ' . (int) $ws_pid . ')' : '<b>' . ws_e(ws_t('ALLG.LAEUFT_NICHT')) . '</b>' ?></td></tr>
+<tr><td><?= ws_e(ws_t('KOPF.BRUECKE')) ?></td>
+    <td><?= $ws_bbz === 'laeuft' ? ws_e(ws_t('ALLG.LAEUFT')) : ($ws_bbz === 'aus' ? ws_e(ws_t('KOPF.BRUECKE_AUS')) : '<b>' . ws_e(ws_t('ALLG.LAEUFT_NICHT')) . '</b>') ?></td></tr>
 <tr><td><?= ws_e(ws_t('KOPF.WEG')) ?></td>
     <td><b><?= $ws_udp ? 'UDP' : 'MQTT' ?></b></td></tr>
 <tr><td><?= ws_e(ws_t('KOPF.PERSONEN')) ?></td>
@@ -1076,11 +1091,10 @@ function ws_person_zustand(array $z, $name, $frisch)
 </table>
 
 <?php
-/* Der Listener wird nur bei MQTT gebraucht. Bis 3.1.11 stand "laeuft nicht"
- * auch dann als Auffaelligkeit da, wenn UDP gewaehlt war - also im richtigen
- * Zustand. */
-if (!$ws_udp && !$ws_pid) { ?>
-<div class="sm-warnung"><b>MQTT:</b> <?php echo ws_t('KOPF.W_LISTENER'); ?></div>
+/* Gruppe 14: gewarnt wird nur, wenn "Befehle ueber MQTT annehmen" an ist und die Bruecke steht - ein Haken aus
+ * ist der richtige Zustand (bis 3.2.14 dieselbe Regel fuer den Listener und den Weg UDP). */
+if ($ws_bbz === 'steht') { ?>
+<div class="sm-warnung"><b>MQTT:</b> <?php echo ws_t('KOPF.W_BRUECKE'); ?></div>
 <?php }
 if (!$ws_udp && ws_mqtt_autostart() === false) { ?>
 <div class="sm-warnung"><b>MQTT:</b> <?php echo ws_t('KOPF.W_AUTOSTART'); ?></div>
@@ -1108,7 +1122,6 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= ws_e(ws_t('LEGENDE.LESEN')) ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?= ws_e(ws_t('LEGENDE.TECHNIK')) ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= ws_e(ws_t('LEGENDE.AKTION')) ?></span>
 </div>
 
@@ -1149,7 +1162,7 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <tr><th style="width:26%;"><?= ws_e(ws_t('ALLG.NAME')) ?></th><th><?= ws_e(ws_t('EINST.SP_ADRESSEN')) ?></th><th style="width:22%;"><?= ws_e(ws_t('ALLG.MQTT_THEMA')) ?></th><th style="width:10%;"><?= ws_e(ws_t('EINST.SP_LOESCHEN')) ?></th></tr>
 <?php foreach ($ws_zeigen as $ws_i => $u) { ?>
 <tr>
-    <td><input data-role="none" type="text" name="username[<?= (int) $ws_i ?>]" value="<?= ws_e($u['name']) ?>"<?= ws_fm('username[' . (int) $ws_i . ']') ?> placeholder="<?= ws_e(ws_t('EINST.PH_NAME')) ?>"><input data-role="none" type="hidden" name="uschluessel[<?= (int) $ws_i ?>]" value="<?= ws_e($u['schluessel']) ?>"></td>
+    <td><input data-role="none" type="text" name="username[<?= (int) $ws_i ?>]" value="<?= ws_e($u['name']) ?>"<?= ws_fm('username[' . (int) $ws_i . ']') ?> placeholder="<?= ws_e(ws_t('EINST.PH_NAME')) ?>"></td>
     <td><input data-role="none" type="text" name="macs[<?= (int) $ws_i ?>]" value="<?= ws_e($u['macs']) ?>"<?= ws_fm('macs[' . (int) $ws_i . ']') ?> placeholder="aa:bb:cc:dd:ee:ff; 192.168.1.44"></td>
     <td class="sm-hilfe" style="padding-top:12px;"><?= $u['name'] !== '' ? 'wifi_ng/' . ws_e(ws_topic_name($u['name'])) : '—' ?></td>
     <td style="text-align:center;padding-top:12px;"><?php if ($u['name'] !== '') { ?><input data-role="none" type="checkbox" name="uloeschen[<?= (int) $ws_i ?>]" value="1" <?= !empty($u['loeschen']) ? 'checked' : '' ?>><?php } else { echo '—'; } ?></td>
@@ -1187,6 +1200,8 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <div>
     <label class="sm-check"><input data-role="none" type="checkbox" name="active_scan" value="1" <?= ws_fh('settings', 'active_scan', ws_cfg($ws_cfg, 'BASE.ACTIVE_SCAN', '0') === '1') ? 'checked' : '' ?>> <?= ws_e(ws_t('EINST.L_AKTIV')) ?></label>
     <div class="sm-hilfe"><?= ws_t('EINST.HINT_AKTIV') ?></div>
+    <label class="sm-check" style="margin-top:6px;"><input data-role="none" type="checkbox" name="weckpaket" value="1" <?= ws_fh('settings', 'weckpaket', ws_cfg($ws_cfg, 'BASE.WECKPAKET', '0') === '1') ? 'checked' : '' ?>> <?= ws_e(ws_t('EINST.L_WECKPAKET')) ?></label>
+    <div class="sm-hilfe"><?= ws_t('EINST.HINT_WECKPAKET') ?></div>
 </div>
 </div>
 <div class="sm-hilfe" style="margin-top:6px;"><?= ws_t('EINST.HINT_MODUS0') ?></div>
@@ -1260,20 +1275,6 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
   </form>
 </div>
 
-<h2><?= ws_e(ws_t('ALLG.H_VORLAGE')) ?></h2>
-<div class="sm-hinweis"><?= ws_t('ALLG.H_VORLAGE_TEXT') ?></div>
-<div class="sm-knopfreihe">
-  <!-- Eigenes Formular: ein Download darf nicht am Speichern haengen, und
-       HTML verbietet Formulare im Formular. Bis 2.5.1 lag das versteckte
-       Feld "vorlage" im Einstellungsformular - der Browser warf das innere
-       Formular weg, und JEDES Speichern lieferte zusaetzlich die
-       Vorlagendatei als Download aus. -->
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="1"><?= ws_e(ws_t('ALLG.K_VORLAGE')) ?></button>
-  </form>
-</div>
 </div>
 
 <!-- ================= Reiter: MQTT / Uebertragungsweg ================= -->
@@ -1315,6 +1316,16 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 </table>
 <div class="sm-hinweis"><?= ws_abo_text() ?></div>
 
+<?php /* Gruppe 14 (3.5, E1/E3/E4; V3 E15): Befehle aus Loxone ueber die Befehlsbruecke, ab Werk aus. Kein eigener
+         Startknopf - nach dem Speichern wird geschaltet, sonst der Waechter in cron.01min. */ ?>
+<h2><?= ws_e(ws_t('MQTTR.H_BEFEHLE')) ?></h2>
+<label class="sm-check"><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1" <?= ws_fh('mqtt', 'befehle_mqtt_ein', ws_cfg($ws_cfg, 'BASE.BEFEHLE_MQTT_EIN', '0') === '1') ? 'checked' : '' ?>> <?= ws_e(ws_t('MQTTR.L_BEFEHLE')) ?></label>
+<label class="sm-check"><input data-role="none" type="checkbox" name="befehle_eingreifend_ein" value="1" <?= ws_fh('mqtt', 'befehle_eingreifend_ein', ws_cfg($ws_cfg, 'BASE.BEFEHLE_EINGREIFEND_EIN', '0') === '1') ? 'checked' : '' ?>> <?= ws_e(ws_t('MQTTR.L_EINGREIFEND')) ?></label>
+<div class="sm-hilfe"><?= ws_t('MQTTR.HINT_BEFEHLE') ?></div>
+<h2><?= ws_e(ws_t('MQTTR.H_HAUS')) ?></h2>
+<label class="sm-check"><input data-role="none" type="checkbox" name="haus_abnehmer" value="1" <?= ws_fh('mqtt', 'haus_abnehmer', ws_cfg($ws_cfg, 'BASE.HAUS_ABNEHMER', '0') === '1') ? 'checked' : '' ?>> <?= ws_e(ws_t('MQTTR.L_HAUS')) ?></label>
+<div class="sm-hilfe"><?= ws_t('MQTTR.HINT_HAUS') ?></div>
+
 <div class="sm-knopfreihe" style="margin-top:18px;">
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= ws_e(ws_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -1329,6 +1340,10 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 </div>
 <h2><?= ws_e(ws_t('REITER.LOXONE')) ?></h2>
 <div class="sm-hilfe"><?= ws_t('LOX.EINLEITUNG') ?></div>
+<?php /* Gruppe 14 (3.2.15, Entwurf 2.5): Werte ueber das MQTT-Gateway in einfache Virtuelle Eingaenge (Namenstabelle),
+         Befehle ueber MQTT an die Befehlsbruecke (Vorlage MQTT-Befehle). Die HTTP-Vorlage "WifiScanner Anwesenheit"
+         (VirtualInHttp an http://localhost) ist entfallen (E3); der HTTP-Endpunkt und UDP stehen zugeklappt unten fuer
+         bestehende Anlagen. */ ?>
 
 <div class="sm-step"><b><?= ws_e(ws_t('LOX.S1_TITEL')) ?></b><br>
 <?php printf(ws_t('LOX.S1_TEXT'), '<span class="sm-mono">MQTT Gateway</span>'); ?>
@@ -1344,61 +1359,75 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <div class="sm-step"><b><?= ws_e(ws_t('LOX.S2_TITEL')) ?></b><br>
 <?= ws_t('LOX.S2_TEXT') ?>
 <div class="sm-breit">
-<table class="sm-tbl">
-<tr><th><?= ws_e(ws_t('ALLG.THEMA')) ?></th><th><?= ws_e(ws_t('ALLG.BEDEUTUNG')) ?></th><th><?= ws_e(ws_t('ALLG.WERTE')) ?></th><th style="width:13%;"><?= ws_e(ws_t('ALLG.RETAIN')) ?></th></tr>
-<?php /* Die vierte Spalte ist Hausstandard (Regeln/07): wer ein Thema anlegt,
-         schreibt in die Namenstabelle, ob es zurueckbehalten wird. Bis 3.2.3
-         fuehrte ws_themen() die Angabe mit, zeigte sie aber nicht - und
-         trug sie fuer die vier Lebenszeichen-Themen falsch. */ ?>
-<?php foreach (ws_themen($ws_cfg) as $ws_th) { ?>
-<tr><td class="sm-mono"><?= ws_e($ws_th[0]) ?></td><td><?= ws_e($ws_th[1]) ?></td><td><?= ws_e($ws_th[2]) ?></td><td><?= $ws_th[3] ? ws_e(ws_t('ALLG.RETAIN_JA')) : '<span class="sm-aus">' . ws_e(ws_t('ALLG.RETAIN_NEIN')) . '</span>' ?></td></tr>
+<table class="sm-tbl" id="ws-namen">
+<tr><th><?= ws_e(ws_t('LOX.SP_GWNAME')) ?></th><th><?= ws_e(ws_t('ALLG.THEMA')) ?></th><th><?= ws_e(ws_t('ALLG.BEDEUTUNG')) ?></th><th><?= ws_e(ws_t('ALLG.WERTE')) ?></th><th style="width:11%;"><?= ws_e(ws_t('ALLG.RETAIN')) ?></th><th style="width:11%;"><?= ws_e(ws_t('LOX.SP_V2')) ?></th></tr>
+<?php /* Die Retain-Spalte ist Hausstandard (Regeln/07). V2: "Haken" = in der Hakenliste des Musterprojekts, N = dazu
+         Noncached (E11; nur status/ok). Eine Quelle fuer Tabelle, Kopierknopf, Reiter Test und ws_test.php?topics:
+         ws_mqtt_namen(). */ ?>
+<?php foreach (ws_mqtt_namen($ws_cfg) as $ws_nz) { ?>
+<tr><td class="sm-mono"><span class="ws-gwname"><?= ws_e($ws_nz['name']) ?></span></td><td class="sm-mono"><?= ws_e($ws_nz['thema']) ?></td><td><?= ws_e($ws_nz['bedeutung']) ?></td><td><?= ws_e($ws_nz['werte']) ?></td>
+    <td><?= $ws_nz['retained'] ? ws_e(ws_t('ALLG.RETAIN_JA')) : '<span class="sm-aus">' . ws_e(ws_t('ALLG.RETAIN_NEIN')) . '</span>' ?></td>
+    <td><?= $ws_nz['haken'] ? ws_e(ws_t('LOX.V2_HAKEN')) . ($ws_nz['v2'] === 'N' ? ', N' : '') : '&mdash;' ?></td></tr>
 <?php } ?>
 </table>
 </div>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-technik" type="button" id="ws-namen-kopieren"><?= ws_e(ws_t('LOX.K_NAMEN_KOPIEREN')) ?></button>
+<span class="sm-hilfe" id="ws-namen-kopiert"></span>
+</div>
+<script>
+(function () {
+    var k = document.getElementById('ws-namen-kopieren');
+    if (!k) { return; }
+    k.addEventListener('click', function () {
+        var n = [];
+        document.querySelectorAll('#ws-namen .ws-gwname').forEach(function (e) { n.push(e.textContent); });
+        var t = n.join('\n');
+        var fertig = function () { document.getElementById('ws-namen-kopiert').textContent = <?= json_encode(ws_t('LOX.KOPIERT')) ?>; };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(t).then(fertig, function () { window.prompt('', t); });
+        } else {
+            window.prompt('', t);
+        }
+    });
+})();
+</script>
 <div class="sm-hilfe"><?= ws_t('LOX.RETAIN_ERKLAERUNG') ?></div>
+<div class="sm-hilfe"><?= ws_t('LOX.S2_FUSS') ?></div>
 </div>
 
 <div class="sm-step"><b><?= ws_e(ws_t('LOX.S3_TITEL')) ?></b><br>
 <?= ws_t('LOX.S3_TEXT') ?>
+<?php
+/* Sperrzeiten aus der Zuordnung der Bruecke (bin/befehle_zuordnung.php) - eine Quelle; ohne Bruecke die Vorgabe 60 s. */
+$ws_sperre = array();
+if (ws_bruecke_laden() && function_exists('bb_zuordnung_laden')) {
+    list($ws_zo) = bb_zuordnung_laden(ws_bin_datei('befehle_zuordnung.php'));
+    if (is_array($ws_zo) && isset($ws_zo['befehle'])) {
+        foreach ($ws_zo['befehle'] as $ws_zn => $ws_ze) {
+            $ws_sperre[$ws_zn] = isset($ws_ze['sperre_s']) ? (int) $ws_ze['sperre_s'] : 60;
+        }
+    }
+}
+?>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= ws_e(ws_t('ALLG.THEMA')) ?></th><th><?= ws_e(ws_t('LOX.SP_NUTZLAST')) ?></th><th><?= ws_e(ws_t('LOX.SP_WIRKUNG')) ?></th></tr>
-<?php foreach (ws_befehle() as $ws_bf) { ?>
-<tr><td class="sm-mono"><?= ws_e($ws_bf[0]) ?></td><td><?= ws_e($ws_bf[1]) ?></td><td><?= ws_e($ws_bf[2]) ?></td></tr>
+<tr><th><?= ws_e(ws_t('LOX.SP_TITEL')) ?></th><th><?= ws_e(ws_t('ALLG.THEMA')) ?></th><th><?= ws_e(ws_t('LOX.SP_NUTZLAST')) ?></th><th><?= ws_e(ws_t('LOX.SP_HAKEN')) ?></th><th style="width:9%;"><?= ws_e(ws_t('LOX.SP_SPERRE')) ?></th></tr>
+<?php foreach (ws_mqtt_befehle($ws_cfg) as $ws_mb) { ?>
+<tr><td class="sm-mono"><?= ws_e($ws_mb['titel']) ?></td><td class="sm-mono">wifi_ng/befehl/<?= ws_e($ws_mb['name']) ?></td>
+    <td class="sm-mono"><?= ws_e($ws_mb['ein']) ?><?= $ws_mb['aus'] !== null ? ' / ' . ws_e($ws_mb['aus']) : '' ?></td>
+    <td><?= ws_e(ws_t($ws_mb['eingreifend'] ? 'LOX.HAKEN_BEIDE' : 'LOX.HAKEN_EINER')) ?></td>
+    <td><?= (int) (isset($ws_sperre[$ws_mb['name']]) ? $ws_sperre[$ws_mb['name']] : 60) ?> s</td></tr>
 <?php } ?>
 </table>
 </div>
-<?php printf(ws_t('LOX.S3_FUSS'), '<span class="sm-mono">mqtt_listener.pl</span>'); ?>
-</div>
-
-<div class="sm-step"><b><?= ws_e(ws_t('LOX.S6_TITEL')) ?></b><br>
-<?= ws_t('LOX.S6_TEXT') ?>
-<div class="sm-breit">
-<table class="sm-tbl">
-<tr><th style="width:44%;"><?= ws_e(ws_t('LOX.SP_ADRESSE')) ?></th><th><?= ws_e(ws_t('LOX.SP_WIRKUNG')) ?></th></tr>
-<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array(), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_ZEILE')) ?></td></tr>
-<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array('aktion' => 'scan'), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_SCAN')) ?></td></tr>
-<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array('aktion' => 'enable', 'wert' => '1'), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_ENABLE')) ?></td></tr>
-<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array('aktion' => 'interval', 'wert' => '5'), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_INTERVAL')) ?></td></tr>
-<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array('aktion' => 'mode', 'wert' => '0'), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_MODE')) ?></td></tr>
-<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array('selftest' => '1'), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_SELFTEST')) ?></td></tr>
-</table>
-</div>
-<div class="sm-hilfe"><?= ws_t('LOX.S6_VORLAGE') ?></div>
-<?= ws_t('LOX.E_SUCHTEXT_HINWEIS') ?>
-<div class="sm-breit">
-<table class="sm-tbl">
-<tr><th style="width:30%;"><?= ws_e(ws_t('ALLG.NAME')) ?></th><th style="width:28%;"><?= ws_e(ws_t('LOX.SP_SUCHTEXT')) ?></th><th><?= ws_e(ws_t('ALLG.BEDEUTUNG')) ?></th></tr>
-<?php foreach (array('OK' => 'LOX.F_OK', 'ALTER' => 'LOX.F_ALTER', 'ZAEHLER' => 'LOX.F_ZAEHLER',
-                     'PERSONEN' => 'LOX.F_PERSONEN', 'DA' => 'LOX.F_DA', 'ENABLED' => 'LOX.F_ENABLED',
-                     'MODE' => 'LOX.F_MODE', 'INTERVAL' => 'LOX.F_INTERVAL',
-                     'LISTENER' => 'LOX.F_LISTENER', 'CRON' => 'LOX.F_CRON') as $ws_fn => $ws_fs) { ?>
-<tr><td class="sm-mono"><?= ws_e($ws_fn) ?></td><td class="sm-mono"><?= ws_e(ws_check($ws_fn)) ?></td><td><?= ws_e(ws_t($ws_fs)) ?></td></tr>
-<?php } ?>
-<?php foreach ($ws_users as $u) { if ($u['name'] === '') { continue; } $ws_fn = 'P_' . ws_topic_name($u['name']); ?>
-<tr><td class="sm-mono"><?= ws_e($ws_fn) ?></td><td class="sm-mono"><?= ws_e(ws_check($ws_fn)) ?></td><td><?= ws_e(ws_t('LOX.ANWESENHEIT') . ' ' . $u['name']) ?></td></tr>
-<?php } ?>
-</table>
+<div class="sm-hilfe"><?= ws_t('LOX.S3_FUSS') ?></div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_mqtt" value="1"><?= ws_e(ws_t('LOX.K_VORLAGE_MQTT')) ?></button>
+  </form>
 </div>
 </div>
 
@@ -1406,25 +1435,27 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <?= ws_t('LOX.S4_TEXT') ?>
 </div>
 
+<div class="sm-step"><b><?= ws_e(ws_t('LOX.SA_TITEL')) ?></b><br>
+<?= ws_t('LOX.SA_TEXT') ?>
+</div>
+
 <?php
-/* Welle Bild 15 (3.2.14; Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum leicht
- * uebernehmen koennen; Entwurf Welle 15 wf, Entscheidungen 1-14 wie empfohlen): die Seite "WiFi-Scanner-NG" aus
- * dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und mit leitungen_setzen.py verbunden
- * (Musterprojekt/baustein_listen.txt, Abschnitt "WiFi-Scanner-NG", 25 Zeilen; bei einer Person "Beispiel"
- * wortgleich). Ueberschrift, Kasten "So uebernehmen Sie diese Seite", Tabelle, Hinweise, Bild, Link.
+/* Gruppe 14 (Entwurf 9; Musterprojekt/baustein_listen.txt, Abschnitt "WiFi-Scanner-NG", 25 Zeilen, bei einer Person
+ * "Beispiel" wortgleich): die Seite "WiFi-Scanner-NG" des LoxBerry-Plugins Musterprojekts mit einfachen Virtuellen
+ * Eingaengen (Gateway-Namen), einer Formel je Person (-1 = keine Aussage zaehlt nicht als "da", E5), der
+ * Analogwertvalidierung mit En an status_enabled (E14) und den vier Befehlen an den gemeinsamen Ausgang "LoxBerry
+ * MQTT-Gateway" (Befehlsbruecke).
  *
- * Die Nummern rechnet diese Seite wie seit 3.2.10 aus den angelegten Personen: zuerst je Person ein Eingang,
- * dann die sieben Zustandsthemen in der Reihenfolge von ws_themen()/ws_vorlage(). wifi_ng_status_ts und
- * wifi_ng_status_listener behalten ihre Nummer, stehen aber nicht in der Tabelle - die Seite braucht sie nicht
- * (bei einer Person: "Nummern 6 und 8 frei" wie im Musterprojekt). Mehrere Personen: ODER-Kette dahinter
- * (Regel A4, je ODER zwei Eingaenge); dann verschieben sich die Nummern, die Namen bleiben.
- * Bis 3.2.13 standen hier 14 Zeilen (bei einer Person); die Meldung hing direkt an "WLAN-Suche gestoert" -
- * jetzt ueber ODER (mit dem Lebenszeichen "WLAN-Suche steht") und 300 s Einschaltverzoegerung (Entscheidung 4).
+ * Nummern wie im Musterprojekt aus den angelegten Personen: zuerst je Person ein Eingang, dann status_mode, _interval,
+ * _enabled, _ok, je Person eine Formel, status_zaehler; die Nummer danach bleibt frei (frueher status_listener), die
+ * Nummer der frueheren Konstante 1 ebenso (bei einer Person: "Nummern 8 und 15 frei"). Mehrere Personen: ODER-Kette
+ * ueber die Formeln (Regel A4, je ODER zwei Eingaenge); dann verschieben sich die Nummern, die Namen bleiben.
  * Zellen maskiert (ws_e); Verbindungen in Werkzeugform "Ausgang von <Name> (#n)". Schritte und Hinweise roh. */
 $ws_bt = function ($s) { return ws_e(ws_t('LOX.' . $s)); };
 $ws_bz = array();      // Zeilen: Nr, Typ, Name, Parameter, Verbinden (HTML)
 $ws_bnm = array();     // Nummer => Name (HTML)
 $ws_bp = array();      // Nummern der Personeneingaenge
+$ws_bpn = array();     // Namen der Personen (roh)
 $ws_bs = array();      // Zustandsthema => Nummer
 $ws_bnr = 0;
 foreach ($ws_users as $ws_bu) {
@@ -1434,6 +1465,7 @@ foreach ($ws_users as $ws_bu) {
     $ws_bz[] = array($ws_bnr, $ws_bt('B_EINGANG'), $ws_bnm[$ws_bnr],
                      ws_e(sprintf(ws_t('LOX.B_P_PERSON'), $ws_bu['name'])), '&mdash;');
     $ws_bp[] = $ws_bnr;
+    $ws_bpn[] = $ws_bu['name'];
 }
 if (!$ws_bp) {
     /* Noch keine Person angelegt: ein Platzhalter, damit die Kette lesbar bleibt. */
@@ -1441,38 +1473,50 @@ if (!$ws_bp) {
     $ws_bnm[$ws_bnr] = ws_e('wifi_ng_<Name>');
     $ws_bz[] = array($ws_bnr, $ws_bt('B_EINGANG'), $ws_bnm[$ws_bnr], $ws_bt('B_P_KEINE_PERSON'), '&mdash;');
     $ws_bp[] = $ws_bnr;
+    $ws_bpn[] = '<Name>';
 }
-foreach (array('mode' => 'B_P_MODE', 'interval' => 'B_P_INTERVAL', 'enabled' => 'B_P_ENABLED', 'ok' => 'B_P_OK',
-               'ts' => '', 'zaehler' => 'B_P_ZAEHLER', 'listener' => '') as $ws_bk => $ws_bpk) {
+$ws_bn = function ($n) use (&$ws_bnm) { return $ws_bnm[$n] . ' (#' . (int) $n . ')'; };
+foreach (array('mode' => 'B_P_MODE', 'interval' => 'B_P_INTERVAL', 'enabled' => 'B_P_ENABLED', 'ok' => 'B_P_OK') as $ws_bk => $ws_bpk) {
     $ws_bnr++;
     $ws_bs[$ws_bk] = $ws_bnr;
     $ws_bnm[$ws_bnr] = ws_e('wifi_ng_status_' . $ws_bk);
-    if ($ws_bpk !== '') {
-        $ws_bz[] = array($ws_bnr, $ws_bt('B_EINGANG'), $ws_bnm[$ws_bnr], $ws_bt($ws_bpk), '&mdash;');
-    }
+    $ws_bz[] = array($ws_bnr, $ws_bt('B_EINGANG'), $ws_bnm[$ws_bnr], $ws_bt($ws_bpk), '&mdash;');
 }
-$ws_bn = function ($n) use (&$ws_bnm) { return $ws_bnm[$n] . ' (#' . (int) $n . ')'; };
-$ws_bq = $ws_bp[0];
-for ($ws_bi = 1; $ws_bi < count($ws_bp); $ws_bi++) {
+$ws_bf = array();      // Nummern der Formeln
+foreach ($ws_bp as $ws_bi => $ws_bpnr) {
+    $ws_bnr++;
+    $ws_bf[] = $ws_bnr;
+    $ws_bnm[$ws_bnr] = ws_e(sprintf(ws_t('LOX.B_N_FORMEL'), $ws_bpn[$ws_bi]));
+    $ws_bz[] = array($ws_bnr, $ws_bt('B_FORMEL'), $ws_bnm[$ws_bnr], $ws_bt('B_P_FORMEL'),
+                     sprintf(ws_t('LOX.B_V_I1'), $ws_bn($ws_bpnr)));
+}
+$ws_bnr++;
+$ws_bs['zaehler'] = $ws_bnr;
+$ws_bnm[$ws_bnr] = ws_e('wifi_ng_status_zaehler');
+$ws_bz[] = array($ws_bnr, $ws_bt('B_EINGANG'), $ws_bnm[$ws_bnr], $ws_bt('B_P_ZAEHLER'), '&mdash;');
+$ws_bnr++;   // frei (frueher wifi_ng_status_listener)
+$ws_bq = $ws_bf[0];
+for ($ws_bi = 1; $ws_bi < count($ws_bf); $ws_bi++) {
     $ws_bnr++;
     $ws_bnm[$ws_bnr] = ws_e(sprintf(ws_t('LOX.B_N_ODER'), $ws_bi + 1));
     $ws_bz[] = array($ws_bnr, $ws_bt('B_ODER'), $ws_bnm[$ws_bnr], '&mdash;',
-                     sprintf(ws_t('LOX.B_V_ZWEI'), $ws_bn($ws_bq), $ws_bn($ws_bp[$ws_bi])));
+                     sprintf(ws_t('LOX.B_V_ZWEI'), $ws_bn($ws_bq), $ws_bn($ws_bf[$ws_bi])));
     $ws_bq = $ws_bnr;
 }
-/* Die uebrigen Bausteine: Kennung => Name (HTML). Nummern zuerst, weil die Meldung (#14 bei einer Person)
- * auf die spaetere Einschaltverzoegerung zeigt. */
+/* Status "Wer ist zu Hause" V1: bei einer Person ihr Eingang (zeigt -1 als eigene Zeile), bei mehreren das ODER. */
+$ws_bv1 = count($ws_bp) === 1 ? $ws_bp[0] : $ws_bq;
 $ws_bkn = array(
     'zuhause' => $ws_bt('B_N_ZUHAUSE'), 'misst' => $ws_bt('B_N_MISST'), 'niemand' => $ws_bt('B_N_NIEMAND'),
     'weg' => $ws_bt('B_N_ALLEWEG'), 'gest' => $ws_bt('B_N_GESTOERT'), 'meld' => $ws_bt('B_N_MELDUNG'),
-    'konst' => $ws_bt('B_N_KONSTANTE'), 'valid' => $ws_bt('B_N_STEHT'), 'gesamt' => $ws_bt('B_N_GESAMT'),
+    'frei' => '', 'valid' => $ws_bt('B_N_STEHT'), 'gesamt' => $ws_bt('B_N_GESAMT'),
     'best' => $ws_bt('B_N_BESTAETIGT'), 'st1' => $ws_bt('B_N_SUCHE'), 'st2' => $ws_bt('B_N_WER'),
-    't1' => $ws_bt('B_N_JETZT'), 'q1' => 'WIFI_SUCHE_JETZT', 't2' => $ws_bt('B_N_EIN'), 'q2' => 'WIFI_SUCHE_EIN',
-    't3' => $ws_bt('B_N_AUS'), 'q3' => 'WIFI_SUCHE_AUS', 'q4' => 'WIFI_TAKT_SCHNELL',
+    't1' => $ws_bt('B_N_JETZT'), 'q1' => ws_e('WiFi-Scanner-NG: Suche jetzt'), 't2' => $ws_bt('B_N_EIN'),
+    'q2' => ws_e('WiFi-Scanner-NG: Suche ein'), 't3' => $ws_bt('B_N_AUS'), 'q3' => ws_e('WiFi-Scanner-NG: Suche aus'),
+    'q4' => ws_e('WiFi-Scanner-NG: Takt schnell'),
 );
 $ws_b = array();
 foreach ($ws_bkn as $ws_bk => $ws_bx) {
-    $ws_b[$ws_bk] = ++$ws_bnr;
+    $ws_b[$ws_bk] = ++$ws_bnr;   // 'frei': die Nummer der frueheren Konstante 1 bleibt frei (E14)
     $ws_bnm[$ws_bnr] = $ws_bx;
 }
 $ws_bs_ok = $ws_bs['ok'];
@@ -1483,12 +1527,11 @@ foreach (array(
     array('weg', 'B_UND', '&mdash;', sprintf(ws_t('LOX.B_V_ZWEI'), $ws_bn($ws_b['niemand']), $ws_bn($ws_b['misst']))),
     array('gest', 'B_NICHT', '&mdash;', sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['misst']))),
     array('meld', 'B_MELDUNG', $ws_bt('B_P_MELDUNG'), sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['best']))),
-    array('konst', 'B_KONSTANTE', $ws_bt('B_P_KONSTANTE'), '&mdash;'),
-    array('valid', 'B_VALID', $ws_bt('B_P_STEHT'), sprintf(ws_t('LOX.B_V_VALID'), $ws_bn($ws_bs['zaehler']), $ws_bn($ws_b['konst']))),
+    array('valid', 'B_VALID', $ws_bt('B_P_STEHT'), sprintf(ws_t('LOX.B_V_VALID'), $ws_bn($ws_bs['zaehler']), $ws_bn($ws_bs['enabled']))),
     array('gesamt', 'B_ODER', $ws_bt('B_P_GESAMT'), sprintf(ws_t('LOX.B_V_ZWEI_E'), $ws_bn($ws_b['gest']), $ws_bn($ws_b['valid']))),
     array('best', 'B_EVZ', $ws_bt('B_P_EVZ'), sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['gesamt']))),
     array('st1', 'B_STATUS', $ws_bt('B_P_SUCHE'), sprintf(ws_t('LOX.B_V_STATUS1'), $ws_bn($ws_bs_ok), $ws_bn($ws_b['valid']), $ws_bn($ws_bs['enabled']), $ws_bn($ws_bs['interval']), $ws_bn($ws_bs['mode']), $ws_bn($ws_bs['zaehler']))),
-    array('st2', 'B_STATUS', $ws_bt('B_P_WER'), sprintf(ws_t('LOX.B_V_STATUS2'), $ws_bn($ws_bq), $ws_bn($ws_b['zuhause']), $ws_bn($ws_b['misst']))),
+    array('st2', 'B_STATUS', ws_e(sprintf(ws_t('LOX.B_P_WER'), $ws_bpn[0])), sprintf(ws_t('LOX.B_V_STATUS2'), $ws_bn($ws_bv1), $ws_bn($ws_b['zuhause']), $ws_bn($ws_b['misst']))),
     array('t1', 'B_TASTE', $ws_bt('B_P_JETZT'), '&mdash;'),
     array('q1', 'B_VQ', ws_e(sprintf(ws_t('LOX.B_P_Q_JETZT'), '#' . $ws_bp[0], '#' . $ws_bs_ok)),
           sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['t1']))),
@@ -1496,7 +1539,7 @@ foreach (array(
     array('q2', 'B_VQ', ws_e(sprintf(ws_t('LOX.B_P_Q_EIN'), '#' . $ws_bs['enabled'])),
           sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['t2']))),
     array('t3', 'B_TASTE', $ws_bt('B_P_AUS'), '&mdash;'),
-    array('q3', 'B_VQ', ws_e(sprintf(ws_t('LOX.B_P_Q_AUS'), '#' . $ws_bs['enabled'])),
+    array('q3', 'B_VQ', ws_e(sprintf(ws_t('LOX.B_P_Q_AUS'), (string) $ws_b['q2'], '#' . $ws_bs['enabled'])),
           sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['t3']))),
     array('q4', 'B_VQ', $ws_bt('B_P_Q_SCHNELL'), sprintf(ws_t('LOX.B_V_EINS'), $ws_bn($ws_b['weg']))),
 ) as $ws_bx) {
@@ -1504,18 +1547,19 @@ foreach (array(
 }
 $ws_bh = function ($k) use (&$ws_b) { return '#' . (int) $ws_b[$k]; };
 $ws_bi_ = function ($k) use (&$ws_b, &$ws_bnm) { return '<i>' . $ws_bnm[$ws_b[$k]] . '</i>'; };
-/* Schritte und Hinweise: je Text ein ausgeschriebener sprintf-Aufruf (sprachplatzhalter_pruefen.py zaehlt
- * die Argumente nur so); Texte ohne Platzhalter direkt. Ausgabe roh (Auszeichnung erlaubt). */
+/* Schritte und Hinweise: je Text ein ausgeschriebener sprintf-Aufruf (sprachplatzhalter_pruefen.py zaehlt die Argumente
+ * nur so); Texte ohne Platzhalter direkt. Ausgabe roh (Auszeichnung erlaubt). */
 $ws_bschritte = array(
     ws_t('LOX.SCHRITT1'), ws_t('LOX.SCHRITT2'), ws_t('LOX.SCHRITT3'), ws_t('LOX.SCHRITT4'),
     sprintf(ws_t('LOX.SCHRITT5'), $ws_bi_('t1'), $ws_bi_('t2'), $ws_bi_('t3')),
-    sprintf(ws_t('LOX.SCHRITT6'), $ws_bh('zuhause'), $ws_bh('st2')),
+    sprintf(ws_t('LOX.SCHRITT6'), '#' . $ws_bf[0], $ws_bh('zuhause')),
     sprintf(ws_t('LOX.SCHRITT7'), $ws_bi_('meld'), $ws_bh('best')),
-    sprintf(ws_t('LOX.SCHRITT8'), $ws_bh('valid'), $ws_bh('st1')),
+    sprintf(ws_t('LOX.SCHRITT8'), $ws_bh('valid'), $ws_bh('st1'), $ws_bh('st2')),
     sprintf(ws_t('LOX.SCHRITT9'), $ws_bi_('st1'), $ws_bi_('t1'), $ws_bi_('t3'), $ws_bi_('t2')),
 );
 $ws_bhinweise = array(
     sprintf(ws_t('LOX.H_WEG'), $ws_bh('weg'), $ws_bh('zuhause'), $ws_bh('weg'), $ws_bh('zuhause')),
+    sprintf(ws_t('LOX.H_FORMEL'), '#' . $ws_bf[0], $ws_bh('st2')),
     sprintf(ws_t('LOX.H_STEHT'), $ws_bh('valid'), $ws_bi_('st1')),
     sprintf(ws_t('LOX.H_EN'), $ws_bh('valid')),
     sprintf(ws_t('LOX.H_MELDUNG'), $ws_bh('meld'), $ws_bh('best'), $ws_bh('valid'), $ws_bh('gesamt')),
@@ -1525,7 +1569,6 @@ $ws_bhinweise = array(
     sprintf(ws_t('LOX.H_REGEL'), $ws_bh('zuhause')),
     ws_t('LOX.H_GRENZE'),
 );
-?>
 ?>
 <div class="sm-step"><b><?= ws_e(ws_t('LOX.H_BAUSTEINE')) ?></b><br>
 <?= ws_t('LOX.BAUSTEINE_TEXT') ?>
@@ -1559,32 +1602,76 @@ $ws_bhinweise = array(
 <div class="sm-hilfe"><?= ws_t('LOX.MUSTERPROJEKT') ?></div>
 </div>
 
-<div class="sm-step"><b><?= ws_e(ws_t('LOX.S5_TITEL')) ?></b><br>
-<?php printf(ws_t('LOX.S5_TEXT'),
-    '<span class="sm-mono">Name:0</span>', '<span class="sm-mono">Name:1</span>',
-    '<span class="sm-mono">' . ws_e(ws_cfg($ws_cfg, 'BASE.PORT', '7007')) . '</span>',
-    '<span class="sm-mono">Name:\v</span>'); ?>
-</div>
-
-<h2><?= ws_e(ws_t('LOX.H_MERKWORT')) ?></h2>
-<div class="sm-warnung"><?= ws_t('LOX.MERKWORT_WARNUNG') ?></div>
+<?php /* Gruppe 14 (E6): Bestehende Anlagen - HTTP-Endpunkt hinter endpunkt_ein (auch die Abfrage nur mit Merkwort),
+         Steuervorlage (HTTP) nur mit dem Haken, UDP an den Miniserver, Merkwort. Zugeklappt. */ ?>
+<details class="sm-step"<?= ws_fa('endpunkt') ? ' open' : '' ?>>
+<summary><b><?= ws_e(ws_t('LOX.ALT_TITEL')) ?></b></summary>
+<div class="sm-hilfe"><?= ws_t('LOX.ALT_TEXT') ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<label class="sm-check"><input data-role="none" type="checkbox" name="endpunkt_ein" value="1" <?= ws_endpunkt_ein($ws_cfg) ? 'checked' : '' ?>> <?= ws_e(ws_t('LOX.L_ENDPUNKT')) ?></label>
 <div class="sm-knopfreihe">
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="1"><?= ws_e(ws_t('ALLG.K_VORLAGE')) ?></button>
-  </form>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="endpunkt_save" value="1"><?= ws_e(ws_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
+<?php if (ws_endpunkt_ein($ws_cfg)) { ?>
+<h4 class="sm-h4"><?= ws_e(ws_t('LOX.S6_TITEL')) ?></h4>
+<?= ws_t('LOX.S6_TEXT') ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:44%;"><?= ws_e(ws_t('LOX.SP_ADRESSE')) ?></th><th><?= ws_e(ws_t('LOX.SP_WIRKUNG')) ?></th></tr>
+<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array(), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_ZEILE')) ?></td></tr>
+<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array('aktion' => 'scan'), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_SCAN')) ?></td></tr>
+<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array('aktion' => 'enable', 'wert' => '1'), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_ENABLE')) ?></td></tr>
+<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array('aktion' => 'interval', 'wert' => '5'), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_INTERVAL')) ?></td></tr>
+<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array('aktion' => 'mode', 'wert' => '0'), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_MODE')) ?></td></tr>
+<tr><td class="sm-mono">http://<?= ws_e(ws_host()) ?><?= ws_e(ws_endpunkt_pfad(array('selftest' => '1'), $ws_cfg)) ?></td><td><?= ws_e(ws_t('LOX.E_SELFTEST')) ?></td></tr>
+</table>
+</div>
+<?= ws_t('LOX.E_SUCHTEXT_HINWEIS') ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:30%;"><?= ws_e(ws_t('ALLG.NAME')) ?></th><th style="width:28%;"><?= ws_e(ws_t('LOX.SP_SUCHTEXT')) ?></th><th><?= ws_e(ws_t('ALLG.BEDEUTUNG')) ?></th></tr>
+<?php foreach (array('OK' => 'LOX.F_OK', 'ALTER' => 'LOX.F_ALTER', 'ZAEHLER' => 'LOX.F_ZAEHLER',
+                     'PERSONEN' => 'LOX.F_PERSONEN', 'DA' => 'LOX.F_DA', 'ENABLED' => 'LOX.F_ENABLED',
+                     'MODE' => 'LOX.F_MODE', 'INTERVAL' => 'LOX.F_INTERVAL',
+                     'LISTENER' => 'LOX.F_LISTENER', 'CRON' => 'LOX.F_CRON') as $ws_fn => $ws_fs) { ?>
+<tr><td class="sm-mono"><?= ws_e($ws_fn) ?></td><td class="sm-mono"><?= ws_e(ws_check($ws_fn)) ?></td><td><?= ws_e(ws_t($ws_fs)) ?></td></tr>
+<?php } ?>
+<?php foreach ($ws_users as $u) { if ($u['name'] === '') { continue; } $ws_fn = 'P_' . ws_topic_name($u['name']); ?>
+<tr><td class="sm-mono"><?= ws_e($ws_fn) ?></td><td class="sm-mono"><?= ws_e(ws_check($ws_fn)) ?></td><td><?= ws_e(ws_t('LOX.ANWESENHEIT') . ' ' . $u['name']) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-hilfe"><?= ws_t('LOX.S6_VORLAGE') ?></div>
+<div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_steuerung" value="1"><?= ws_e(ws_t('LOX.K_STEUERVORLAGE')) ?></button>
   </form>
+</div>
+<?php } else { ?>
+<div class="sm-hinweis"><?= ws_t('LOX.ALT_ERST_HAKEN') ?></div>
+<?php } ?>
+
+<h4 class="sm-h4"><?= ws_e(ws_t('LOX.S5_TITEL')) ?></h4>
+<?php printf(ws_t('LOX.S5_TEXT'),
+    '<span class="sm-mono">Name:0</span>', '<span class="sm-mono">Name:1</span>',
+    '<span class="sm-mono">' . ws_e(ws_cfg($ws_cfg, 'BASE.PORT', '7007')) . '</span>',
+    '<span class="sm-mono">Name:\v</span>'); ?>
+
+<h4 class="sm-h4"><?= ws_e(ws_t('LOX.H_MERKWORT')) ?></h4>
+<div class="sm-warnung"><?= ws_t('LOX.MERKWORT_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= ws_e(ws_t('LOX.K_MERKWORT_NEU')) ?></button>
   </form>
 </div>
+</details>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
@@ -1666,10 +1753,11 @@ $ws_add(ws_t('TEST.P_REITER'), $ws_ro, $ws_rt);
 $ws_add(ws_t('TEST.P_FORM'), 9, '');
 
 // 5. Stimmt die Themenliste mit dem Sendecode ueberein?
-//    Gezaehlt wird gegen die publish/retain-Zeilen der beiden Perl-Skripte.
+//    Gezaehlt wird gegen die publish/retain-Zeilen der beiden Perl-Skripte (seit 3.2.15 check.pl und
+//    mqtt_abraeumen.pl; der Listener ist entfallen). W28: gemessen am Quelltext, nur ausgeschriebene Themen.
 $ws_send = array();
-foreach (array('check.pl', 'mqtt_listener.pl') as $ws_pl) {
-    $ws_q = (string) @file_get_contents($ws_p['bindir'] . '/' . $ws_pl);
+foreach (array('check.pl', 'mqtt_abraeumen.pl') as $ws_pl) {
+    $ws_q = (string) @file_get_contents(ws_bin_datei($ws_pl));
     if ($ws_q === '') { continue; }
     if (preg_match_all('/retain\s*\(\s*"([^"]*wifi_ng[^"]*)"/', $ws_q, $ws_m2)) {
         foreach ($ws_m2[1] as $ws_tt) { $ws_send[] = $ws_tt; }
@@ -1706,8 +1794,8 @@ if (!$ws_send) {
      * Lebenszeichen-Thema wirklich OHNE Retain hinaus? Gemessen am
      * Sendecode, nicht an der Absicht. */
     $ws_lz_retained = array();
-    foreach (array('check.pl', 'mqtt_listener.pl') as $ws_pl) {
-        $ws_q = (string) @file_get_contents($ws_p['bindir'] . '/' . $ws_pl);
+    foreach (array('check.pl', 'mqtt_abraeumen.pl') as $ws_pl) {
+        $ws_q = (string) @file_get_contents(ws_bin_datei($ws_pl));
         if ($ws_q === '') { continue; }
         if (preg_match_all('/->\s*retain\s*\(\s*"([^"]+)"/', $ws_q, $ws_mr)) {
             foreach ($ws_mr[1] as $ws_tt) {
@@ -1716,9 +1804,25 @@ if (!$ws_send) {
         }
     }
     $ws_lz_retained = array_values(array_unique($ws_lz_retained));
-    $ws_add(ws_t('TEST.P_RETAIN'), $ws_lz_retained ? 0 : 1,
-        $ws_lz_retained ? sprintf(ws_t('TEST.P_RETAIN_FALSCH'), ws_e(implode(', ', $ws_lz_retained)))
-                        : sprintf(ws_t('TEST.P_RETAIN_OK'), count(ws_lebenszeichen())));
+    /* W28 (Gruppe 14): ein retain() mit Variable ist am Quelltext nicht pruefbar. check.pl hat genau zwei
+     * erwartete - die Person ($topic, 0/1) und die -1-Zeile ($topic, E5); ein dritter heisst "nicht pruefbar"
+     * (Strich, Zahl genannt) statt still gruen. */
+    $ws_rv = array();
+    if (preg_match_all('/->\s*retain\s*\(\s*(\$[A-Za-z_][A-Za-z0-9_]*)/',
+                       (string) @file_get_contents(ws_bin_datei('check.pl')), $ws_rvm)) {
+        $ws_rv = $ws_rvm[1];
+    }
+    $ws_rv_erwartet = array('$topic', '$topic');
+    $ws_rv_mehr = count($ws_rv) - count($ws_rv_erwartet);
+    $ws_rv_fremd = array_values(array_diff($ws_rv, $ws_rv_erwartet));
+    if ($ws_lz_retained) {
+        $ws_add(ws_t('TEST.P_RETAIN'), 0, sprintf(ws_t('TEST.P_RETAIN_FALSCH'), ws_e(implode(', ', $ws_lz_retained))));
+    } elseif ($ws_rv_mehr > 0 || $ws_rv_fremd) {
+        $ws_add(ws_t('TEST.P_RETAIN'), 2, sprintf(ws_t('TEST.P_RETAIN_VARIABLE'), max($ws_rv_mehr, count($ws_rv_fremd)),
+                                               ws_e(implode(', ', $ws_rv))));
+    } else {
+        $ws_add(ws_t('TEST.P_RETAIN'), 1, sprintf(ws_t('TEST.P_RETAIN_OK'), count(ws_lebenszeichen())));
+    }
 }
 
 /* 6. Trifft jede Befehlserkennung die richtige Stelle?
@@ -1768,9 +1872,9 @@ $ws_add(ws_t('TEST.P_SUCHTEXT'), ($ws_kollision || $ws_ohne_trenner) ? 0 : 1,
     : ($ws_ohne_trenner ? sprintf(ws_t('TEST.P_SUCHTEXT_TRENNER'), ws_e(implode(', ', $ws_ohne_trenner)))
                         : sprintf(ws_t('TEST.P_SUCHTEXT_OK'), count($ws_felder_n))));
 
-// 7. Sind die Vorlagen wohlgeformt? Seit 3.2.14 beide: die Eingaenge
-//    (ws_vorlage()) und die Steuerbefehle (ws_vorlage_steuerung()).
-list($ws_vn, $ws_vi) = ws_vorlage();
+// 7. Sind die Vorlagen wohlgeformt? Seit 3.2.15 die Vorlage MQTT-Befehle (ws_vorlage_mqtt_out()) und die
+//    Steuervorlage (HTTP, ws_vorlage_steuerung()); die Eingangsvorlage VirtualInHttp ist entfallen (E3).
+list($ws_vn, $ws_vi) = ws_vorlage_mqtt_out($ws_cfg);
 list($ws_vsn, $ws_vs) = ws_vorlage_steuerung();
 $ws_xml_kaputt = array();
 $ws_alt_xml = libxml_use_internal_errors(true);
@@ -1784,7 +1888,7 @@ libxml_use_internal_errors($ws_alt_xml);
 $ws_add(ws_t('TEST.P_VORLAGE'), function_exists('simplexml_load_string') ? ($ws_xml_kaputt ? 0 : 1) : 2,
     function_exists('simplexml_load_string')
         ? ($ws_xml_kaputt ? sprintf(ws_t('TEST.P_VORLAGE_KAPUTT'), ws_e(implode(', ', $ws_xml_kaputt)))
-                          : sprintf(ws_t('TEST.P_VORLAGE_OK'), substr_count($ws_vi, '<VirtualInHttpCmd'),
+                          : sprintf(ws_t('TEST.P_VORLAGE_OK'), substr_count($ws_vi, '<VirtualOutCmd'),
                                     substr_count($ws_vs, '<VirtualOutCmd')))
         : ws_t('TEST.P_VORLAGE_KEIN_PARSER'));
 
@@ -1807,10 +1911,7 @@ $ws_add(ws_t('TEST.P_DOPPELT'), $ws_dopp ? 0 : 1,
 $ws_wteile = array();
 $ws_wschlecht = 0;
 foreach (array('arping', 'arp', 'arp-scan') as $ws_w) {
-    $ws_wort = '';
-    foreach (array('/usr/sbin', '/sbin', '/usr/bin', '/bin') as $ws_wd) {
-        if (is_executable($ws_wd . '/' . $ws_w)) { $ws_wort = $ws_wd . '/' . $ws_w; break; }
-    }
+    list($ws_wort) = ws_werkzeug_lage($ws_w);   // W21 (Gruppe 14): dieselbe Funktion wie ws_test.php?diag
     if ($ws_wort === '') {
         $ws_wteile[] = sprintf(ws_t('TEST.P_WZ_FEHLT'), ws_e($ws_w));
         $ws_wschlecht++;
@@ -1849,6 +1950,67 @@ $ws_add(ws_t('TEST.P_MARKE'), $ws_marke_alter < 0 ? 1 : 2,
         : sprintf(ws_t('TEST.P_MARKE_ALT'), (int) round($ws_marke_alter / 60),
                   ws_e(ws_upgrade_marke())));
 
+/* ---------------- Gruppe 14 (3.2.15): neue Zeilen der Selbstpruefung ----------------
+ * Zustand 3 = gelb (Hinweis, zaehlt beim Strich): eine Aussage, die kein Fehler des Plugins ist, aber gelesen werden
+ * soll (Quelle schweigt, Werte im Bestand). */
+
+// 12. V4 (E19): Sprachdateien deckungsgleich - Schluessel in beide Richtungen und Zahl der Platzhalter.
+list($ws_sv_ok, $ws_sv_t) = ws_sprachen_vergleich();
+$ws_add(ws_t('TEST.P_SPRACHEN'), $ws_sv_ok ? 1 : 0, $ws_sv_t);
+
+// 13. V3 (E15-E17): Abnehmer von haus/anwesenheit/<person>.
+list($ws_hz, $ws_ht) = ws_haus_zustand($ws_cfg);
+$ws_add(ws_t('TEST.P_HAUS'), $ws_hz, $ws_ht);
+
+// 14. Befehlsbruecke: Zuordnung, Haken, laeuft und hat abonniert (ws_bruecke_bereit), mosquitto-clients.
+if (!ws_bruecke_laden()) {
+    $ws_add(ws_t('TEST.P_BRUECKE'), 0, ws_t('BEFEHL.T_FEHLT'));
+} else {
+    list($ws_bbz, $ws_bbf) = bb_zuordnung_laden(ws_bin_datei('befehle_zuordnung.php'));
+    $ws_bbfehl = $ws_bbz === null ? array($ws_bbf) : bb_zuordnung_pruefen($ws_bbz)[0];
+    if ($ws_bbfehl) {
+        $ws_add(ws_t('TEST.P_BRUECKE'), 0, sprintf(ws_t('BEFEHL.T_DEFEKT'), ws_e($ws_bbfehl[0])));
+    } elseif (ws_cfg($ws_cfg, 'BASE.BEFEHLE_MQTT_EIN', '0') !== '1') {
+        $ws_add(ws_t('TEST.P_BRUECKE'), 2, sprintf(ws_t('BEFEHL.T_AUS'), count($ws_bbz['befehle'])));
+    } elseif (DIRECTORY_SEPARATOR !== '\\' && (bb_programm('mosquitto_sub') === '' || bb_programm('mosquitto_pub') === '')) {
+        $ws_add(ws_t('TEST.P_BRUECKE'), 0, ws_t('BEFEHL.T_MOSQUITTO'));
+    } elseif (ws_bruecke_bereit($ws_cfg)) {
+        $ws_bbzu = bb_json_lesen(bb_pfade()['zustand']);
+        $ws_add(ws_t('TEST.P_BRUECKE'), 1, sprintf(ws_t('BEFEHL.T_LAEUFT'),
+            isset($ws_bbzu['zaehler']['angenommen']) ? (int) $ws_bbzu['zaehler']['angenommen'] : 0,
+            isset($ws_bbzu['zaehler']['abgelehnt']) ? (int) $ws_bbzu['zaehler']['abgelehnt'] : 0,
+            ws_cfg($ws_cfg, 'BASE.BEFEHLE_EINGREIFEND_EIN', '0') === '1' ? ws_t('ALLG.EIN') : ws_t('ALLG.AUS')));
+    } else {
+        $ws_add(ws_t('TEST.P_BRUECKE'), 0, ws_t('BEFEHL.T_STEHT'));
+    }
+}
+
+// 15. E9: kein Rest des MQTT-Listeners der Vorfassung (Prozess, Sperrdateien).
+list($ws_lr_p, $ws_lr_s) = ws_listener_reste();
+$ws_add(ws_t('TEST.P_LISTENER_REST'), ($ws_lr_p || $ws_lr_s) ? 0 : 1,
+    ($ws_lr_p || $ws_lr_s) ? sprintf(ws_t('TEST.P_LISTENER_REST_DA'), ws_e(implode(' ', $ws_lr_p)), ws_e(implode(' ', $ws_lr_s)))
+                           : ws_t('TEST.P_LISTENER_REST_KEIN'));
+
+// 16. E7: Modusregel in check.pl und mqtt_abraeumen.pl gleich und gleich der Regel des Endpunkts.
+list($ws_mr_z, $ws_mr_t) = ws_modusregel_pruefen();
+$ws_add(ws_t('TEST.P_MODUS'), $ws_mr_z, $ws_mr_t);
+
+// 17. Namenstabelle (2.4): jeder Gateway-Name aus seinem Thema, V2-Haken wie im Musterprojekt.
+list($ws_nt_z, $ws_nt_t) = ws_pruef_namen($ws_cfg);
+$ws_add(ws_t('TEST.P_NAMEN'), $ws_nt_z, $ws_nt_t);
+
+// 18. E6: HTTP-Endpunkt - aus ist gewollt (grau), an heisst: Abfrage und Befehle nur mit Merkwort.
+$ws_add(ws_t('TEST.P_ENDPUNKT'), ws_endpunkt_ein($ws_cfg) ? 1 : 2,
+    ws_endpunkt_ein($ws_cfg) ? ws_t('TEST.P_ENDPUNKT_EIN') : ws_t('TEST.P_ENDPUNKT_AUS'));
+
+// 19. Vorlage MQTT-Befehle (3.8): laedt, Themen unter wifi_ng/befehl/, kein Titel = Gateway-Name.
+list($ws_vm_z, $ws_vm_t) = ws_pruef_vorlage_mqtt($ws_cfg);
+$ws_add(ws_t('TEST.P_VORLAGE_MQTT'), $ws_vm_z, $ws_vm_t);
+
+// 20. E1/E10 im Bestand: Werte, die check.pl veraendert laese, und reservierte Personennamen - gelb, keine stille Aenderung.
+$ws_wh = ws_werte_hinweise($ws_cfg);
+$ws_add(ws_t('TEST.P_WERTE'), $ws_wh ? 3 : 1, $ws_wh ? implode('<br>', $ws_wh) : ws_t('TEST.P_WERTE_OK'));
+
 $ws_ja = 0; $ws_nein = 0; $ws_strich = 0;
 foreach ($ws_z as $ws_zz) {
     if ($ws_zz['ok'] === 9) {
@@ -1859,7 +2021,8 @@ foreach ($ws_z as $ws_zz) {
     }
     if ($ws_zz['ok'] === 1) { $ws_ja++; } elseif ($ws_zz['ok'] === 0) { $ws_nein++; } else { $ws_strich++; }
     $ws_sym = $ws_zz['ok'] === 1 ? '<span class="sm-an">✓</span>'
-            : ($ws_zz['ok'] === 0 ? '<span class="sm-aus">✗</span>' : '–');
+            : ($ws_zz['ok'] === 0 ? '<span class="sm-aus">✗</span>'
+            : ($ws_zz['ok'] === 3 ? '<span style="color:#b26a00;font-weight:700">!</span>' : '–'));
     echo '<tr><td>' . ws_e($ws_zz['frage']) . '</td><td style="text-align:center;">' . $ws_sym
        . '</td><td>' . $ws_zz['text'] . "</td></tr>\n";
 }
@@ -1890,11 +2053,6 @@ foreach ($ws_z as $ws_zz) {
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="aktion" value="scan"><?= ws_e(ws_t('TEST.K_SCAN')) ?></button>
   </form>
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
-    <input data-role="none" type="hidden" name="activetab" value="tab-test">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="aktion" value="restart"><?= ws_e(ws_t('TEST.K_RESTART')) ?></button>
-  </form>
 </div>
 <div class="sm-hilfe" style="margin-top:14px;"><?= ws_t('TEST.ERKLAERUNG') ?></div>
 </div>
@@ -1902,11 +2060,16 @@ foreach ($ws_z as $ws_zz) {
 <!-- ================= Reiter: Logdateien ================= -->
 <div class="sm-seite<?= $ws_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <h2><?= ws_e(ws_t('LOG.H_TITEL')) ?></h2>
+<?php /* W29 (Gruppe 14, Regeln/04): die Logdateien des Plugins ueber LBWeb::loglist_html() - mit Loglevel und
+         befehlsbruecke.log. Der eigene Rueckwaertsleser bleibt darunter als Kurzansicht des Suchlaufs. */ ?>
+<?php if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) { ?>
+<div><?= LBWeb::loglist_html(array('PACKAGE' => $ws_p['plugin'], 'NAME' => '')) ?></div>
+<?php } ?>
+<h3 class="sm-h3"><?= ws_e(ws_t('LOG.H_KURZ')) ?></h3>
 <div class="sm-hilfe" style="margin-bottom:8px;">
 <?= ws_t('LOG.HINT_OBEN') ?>
 <?= ws_e(ws_t('ALLG.DATEI')) ?>: <span class="sm-mono"><?= $ws_log_file !== '' ? ws_e($ws_log_file) : ws_e(ws_t('LOG.KEINE_DATEI')) ?></span><br>
 <?= ws_t('LOG.HINT_LOGLEVEL') ?>
-<?php if ($ws_listener_log !== '') { ?><br><?php printf(ws_t('LOG.HINT_LISTENER'), '<span class="sm-mono">' . ws_e($ws_listener_log) . '</span>'); ?><?php } ?>
 </div>
 <?php if ($ws_log_lines) { ?>
 <div class="sm-log"><?= ws_e(implode("\n", $ws_log_lines)) ?></div>
