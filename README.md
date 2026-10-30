@@ -9,6 +9,21 @@ Holland](https://github.com/Gagi2k/LoxBerry-Plugin-WifiScanner) (Apache
 License 2.0). Herkunft und die vollständige Liste der Änderungen stehen in
 [NOTICE](NOTICE).
 
+## Neu in 3.2.16
+
+Pflegefassung der Nachtwelle (29.10.2026), ohne neue Funktion und ohne Änderung an Werten, Themen
+und Befehlen:
+
+* **Befehlsbrücke 1.0.2** (gemeinsame Stammfassung, bisher 1.0.0): `stop` legt als root nichts mehr an,
+  `befehle_start.log` wird gekappt, eine leere Uhr startet den Dienst nicht, der Befehlsordner ist nur für
+  das Plugin lesbar (0700). Die Vorlage der MQTT-Befehle baut das Plugin selbst; sie hatte schon
+  Windows-Zeilenenden (CRLF). Ein Neuimport ist nicht nötig.
+* **Reiter Test, neue Zeile „Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?“** Unter MQTT-Gateway V2
+  liest das Plugin `config/system/subscriptions.json` und nennt jeden Datenpunkt der Hakenliste, der dort nicht
+  angehakt ist, und jeden, bei dem „Noncached“ nicht stimmt (`wifi_ng/status/ok` braucht es, die übrigen nicht).
+  Unter Gateway V1 und beim Weg UDP heißt die Zeile „trifft nicht zu“.
+* **Neues Plugin-Symbol** nach dem Hausstandard (größeres Motiv, gleiche Form wie die übrigen Plugins).
+
 ## Neu in 3.2.15
 
 Werte über das MQTT-Gateway in einfache Virtuelle Eingänge, Befehle über die gemeinsame Befehlsbrücke statt des

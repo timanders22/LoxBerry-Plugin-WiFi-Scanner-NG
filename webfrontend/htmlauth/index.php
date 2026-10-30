@@ -1999,6 +1999,11 @@ $ws_add(ws_t('TEST.P_MODUS'), $ws_mr_z, $ws_mr_t);
 list($ws_nt_z, $ws_nt_t) = ws_pruef_namen($ws_cfg);
 $ws_add(ws_t('TEST.P_NAMEN'), $ws_nt_z, $ws_nt_t);
 
+// 17a. Nachtwelle N8 (3.2.16): stehen unter MQTT-Gateway V2 die Haken der Hakenliste mit dem richtigen Noncached?
+//      Liest config/system/subscriptions.json; unter V1 und beim Weg UDP ein Strich.
+list($ws_v2_z, $ws_v2_t) = ws_v2_haken_lage($ws_cfg);
+$ws_add(ws_t('TEST.P_V2_HAKEN'), $ws_v2_z, ws_e($ws_v2_t));
+
 // 18. E6: HTTP-Endpunkt - aus ist gewollt (grau), an heisst: Abfrage und Befehle nur mit Merkwort.
 $ws_add(ws_t('TEST.P_ENDPUNKT'), ws_endpunkt_ein($ws_cfg) ? 1 : 2,
     ws_endpunkt_ein($ws_cfg) ? ws_t('TEST.P_ENDPUNKT_EIN') : ws_t('TEST.P_ENDPUNKT_AUS'));

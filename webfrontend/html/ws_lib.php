@@ -2230,6 +2230,159 @@ function ws_pruef_namen(?array $cfg = null, ?array $namen = null)
     return array(1, sprintf(ws_t('TEST.P_NAMEN_OK'), count($namen), $haken, $nc));
 }
 
+/* ---------------- Gateway V2: Selbsttest der Haken (Nachtwelle N8, 3.2.16) ---------------- */
+
+/**
+ * Die Fassung des MQTT-Gateways (config/system/general.json Mqtt.Gatewayversion), 0 = nicht feststellbar. Frisch
+ * gelesen fuer ws_v2_haken_lage() (ws_mqtt_gateway_info() merkt sich den ersten Stand je Prozess).
+ */
+function ws_v2_gateway_fassung($home)
+{
+    $g = @json_decode((string) @file_get_contents($home . '/config/system/general.json'), true);
+    foreach (array('Mqtt', 'mqtt') as $a) {
+        if (is_array($g) && isset($g[$a]) && is_array($g[$a])) {
+            foreach (array('Gatewayversion', 'gatewayversion') as $b) {
+                if (isset($g[$a][$b]) && is_scalar($g[$a][$b]) && (string) $g[$a][$b] !== '') {
+                    return (int) $g[$a][$b];
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+/**
+ * Die Abos des MQTT-Gateways V2 aus config/system/subscriptions.json (Subscriptions[].Id je Thema, Noncached):
+ * array(Thema => Noncached ja/nein), null = nicht lesbar. Form wie MGiSmart 1.1.28 mg_v2_abos() und Govee 0.9.30
+ * gv_mqtt_v2_haken_lage(); die Datei liest ws_v2_haken_lage().
+ */
+function ws_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Soll gegen Ist, rein (liest nichts): array(1|0, fehlt[], noncached_fehlt[], noncached_zu_viel[], angehakt, soll).
+ * Soll je Zeile array('thema' => volles Thema, 'name' => Gateway-Name, 'noncached' => bool). Noncached wird in
+ * beide Richtungen verglichen: fehlt es, reicht das Gateway einen gleichen Wert nicht weiter (nach einem Neustart
+ * des Miniservers bliebe der Eingang stehen); steht es zu viel, geht jeder Wert erneut an den Miniserver.
+ */
+function ws_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc_fehlt = array();
+    $nc_zuviel = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ($e['noncached'] && !$abo[$e['thema']]) {
+            $nc_fehlt[] = $e['name'];
+        } elseif (!$e['noncached'] && $abo[$e['thema']]) {
+            $nc_zuviel[] = $e['name'];
+        }
+    }
+    return array(($fehlt || $nc_fehlt || $nc_zuviel) ? 0 : 1, $fehlt, $nc_fehlt, $nc_zuviel, $da, count($soll));
+}
+
+/**
+ * Das Soll fuer den Selbsttest: die Zeilen mit Haken aus ws_mqtt_namen() - DIESELBE Funktion wie Namenstabelle und
+ * V2-Hakenliste im Reiter Einbindung (Regeln/07; je Person, status/mode, /interval, /enabled, /ok, /zaehler).
+ * Noncached wie in der Tabelle: status/ok.
+ */
+function ws_v2_haken_soll($cfg)
+{
+    $aus = array();
+    foreach (ws_mqtt_namen($cfg) as $z) {
+        if (empty($z['haken'])) {
+            continue;
+        }
+        $aus[] = array('thema' => $z['thema'], 'name' => $z['name'], 'noncached' => $z['v2'] === 'N');
+    }
+    return $aus;
+}
+
+/**
+ * Selbsttestzeile "Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?" (Nachtwelle N8, Vorschrift Punkt 4):
+ * array(1|0|2, Text ohne Markup). 1 alle Haken da und Noncached wie in der Hakenliste; 0 es fehlt ein Haken oder
+ * Noncached stimmt nicht (mit Namen); 2 trifft nicht zu (MQTT dieses Plugins aus, Gateway V1) oder nicht
+ * feststellbar (Fassung 0, keine Wurzel, subscriptions.json nicht lesbar). Liest nur.
+ */
+function ws_v2_haken_lage($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = ws_config_read(false);
+    }
+    if (ws_cfg($cfg, 'BASE.UDP_ENABLE', '0') === '1') {
+        return array(2, ws_t('TEST.V2_AUS'));
+    }
+    $home = (string) ws_paths()['home'];
+    $fassung = $home === '' ? 0 : ws_v2_gateway_fassung($home);
+    if ($fassung === 0 || $home === '') {
+        return array(2, ws_t('TEST.V2_UNKLAR'));
+    }
+    if ($fassung < 2) {
+        return array(2, ws_t('TEST.V2_V1'));
+    }
+    $abo = ws_v2_abos(@json_decode((string) @file_get_contents($home . '/config/system/subscriptions.json'), true));
+    if ($abo === null) {
+        return array(2, ws_t('TEST.V2_UNKLAR'));
+    }
+    $liste = ws_v2_haken_soll($cfg);
+    if (!$liste) {
+        return array(2, ws_t('TEST.V2_LEER'));   // leere Hakenliste: kein Urteil (Hausform wie N7)
+    }
+    list($ok, $fehlt, $nc_fehlt, $nc_zuviel, $da, $soll) = ws_v2_haken_abgleich($liste, $abo);
+    $txt = sprintf(ws_t('TEST.V2_ZAHL'), $da, $soll);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(ws_t('TEST.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' …' : ''));
+    }
+    if ($nc_fehlt) {
+        $txt .= ' ' . sprintf(ws_t('TEST.V2_NC_FEHLT'), implode(', ', $nc_fehlt));
+    }
+    if ($nc_zuviel) {
+        $txt .= ' ' . sprintf(ws_t('TEST.V2_NC_ZUVIEL'), implode(', ', $nc_zuviel));
+    }
+    return array($ok, $txt);
+}
+
 /** UDP-Eingang des MQTT-Gateways (general.json Mqtt.Udpinport, sonst 11884). */
 function ws_udp_eingang()
 {
