@@ -785,6 +785,7 @@ if (isset($_SERVER['REQUEST_METHOD'])
 if (isset($_SERVER['REQUEST_METHOD'])
         && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_mqtt'])) {
     list($ws_vname, $ws_vinhalt) = ws_vorlage_mqtt_out($ws_cfg);
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $ws_vname . '"');
     header('Content-Length: ' . strlen($ws_vinhalt));
@@ -800,6 +801,7 @@ if (isset($_SERVER['REQUEST_METHOD'])
 if (isset($_SERVER['REQUEST_METHOD'])
         && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_steuerung'])) {
     list($ws_vname, $ws_vinhalt) = ws_vorlage_steuerung();
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $ws_vname . '"');
     header('Content-Length: ' . strlen($ws_vinhalt));
@@ -823,6 +825,7 @@ if (isset($_SERVER['REQUEST_METHOD'])
     $ws_js = json_encode(array_merge($ws_kopf, $ws_werte),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($ws_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="wifi_einstellungen_'
                . date('Ymd_His') . '.json"');
