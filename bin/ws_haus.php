@@ -299,11 +299,8 @@ function ws_haus_sh(array $p, $befehl)
     $pr = @proc_open(array('/bin/bash', $p['sh'], $befehl), array(0 => array('file', '/dev/null', 'r'),
                      1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $rohr);
     if (!is_resource($pr)) { return array(1, 'ws_haus.sh nicht startbar'); }
-    $aus = trim((string) stream_get_contents($rohr[1]) . ' ' . (string) stream_get_contents($rohr[2]));
-    fclose($rohr[1]);
-    fclose($rohr[2]);
-    $rc = proc_close($pr);
-    return array((int) $rc, $aus);
+    /* ws_haus.sh stop: bis 15 s auf die Sperre, 10 s auf das Ende, dazu die Nachschau. */
+    return ws_kind_fertig($pr, $rohr, 40);
 }
 
 /** Ein Waechterlauf: Haken aus -> anhalten; an und tot oder stumm (Abbild aelter als 180 s) -> Neustart, hoechstens alle 600 s. */

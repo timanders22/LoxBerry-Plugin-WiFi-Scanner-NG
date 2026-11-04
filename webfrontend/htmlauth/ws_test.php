@@ -50,14 +50,15 @@ if ($ws_gefunden === '') {
 require_once $ws_gefunden;
 
 $p = ws_paths();
-$cfg = ws_config_read(false);
-$users = ws_users($cfg);
+/* bis 3.2.16 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
+$ws_lauf_cfg = ws_config_read(false);
+$users = ws_users($ws_lauf_cfg);
 $zustand = ws_zustand_lesen();
 $alter = ws_zustand_alter($zustand);
-$frisch = ws_zustand_frisch($cfg, $zustand);
+$frisch = ws_zustand_frisch($ws_lauf_cfg, $zustand);
 
-$fritz  = (string) ws_cfg($cfg, 'BASE.FRITZBOX_ENABLE', '0');
-$active = (string) ws_cfg($cfg, 'BASE.ACTIVE_SCAN', '0');
+$fritz  = (string) ws_cfg($ws_lauf_cfg, 'BASE.FRITZBOX_ENABLE', '0');
+$active = (string) ws_cfg($ws_lauf_cfg, 'BASE.ACTIVE_SCAN', '0');
 // C8 (Durchgang 02.10.2026): beide Wege aus heisst "keine Suche", nicht Modus 2.
 $mode = ($fritz === '1' && $active === '1') ? ws_t('T.M_BEIDES')
       : (($fritz === '1') ? ws_t('T.M_FRITZ') : (($active === '1') ? ws_t('T.M_SCAN') : ws_t('T.M_AUS')));
@@ -84,17 +85,17 @@ if (isset($_GET['topics'])) {
      * mit dem MQTT Finder abgleicht, und dort sieht man einem Thema nicht
      * an, ob es zurueckbehalten wird. */
     echo "\n" . ws_t('T.THEMEN_ZUSTAND') . "\n";
-    foreach (ws_themen($cfg) as $th) {
+    foreach (ws_themen($ws_lauf_cfg) as $th) {
         if (strpos($th[0], '/status/') === false) { continue; }
         printf("  %-30s %-34s [%s]\n", $th[0], $th[1],
                $th[3] ? ws_t('T.RETAIN_JA') : ws_t('T.RETAIN_NEIN'));
     }
     echo "\n" . ws_t('T.THEMEN_BEFEHLE') . "\n";
-    foreach (ws_mqtt_befehle($cfg) as $bf) {
+    foreach (ws_mqtt_befehle($ws_lauf_cfg) as $bf) {
         printf("  %-30s %s\n", 'wifi_ng/befehl/' . $bf['name'], $bf['ein'] . ($bf['aus'] !== null ? ' / ' . $bf['aus'] : ''));
     }
     echo "\n" . ws_t('T.THEMEN_NAMEN') . "\n";
-    foreach (ws_mqtt_namen($cfg) as $nz) {
+    foreach (ws_mqtt_namen($ws_lauf_cfg) as $nz) {
         printf("  %-34s %s\n", $nz['name'], $nz['haken'] ? 'V2' . ($nz['v2'] === 'N' ? ' N' : '') : '-');
     }
     exit;
@@ -109,7 +110,7 @@ if (isset($_GET['topics'])) {
 if (isset($_GET['config'])) {
     echo ws_strich(ws_t('T.H_KONFIG')) . ws_t('T.DATEI') . ': ' . $p['config'] . "\n\n";
     $geheim = ws_geheime_schluessel();
-    foreach ($cfg as $k => $v) {
+    foreach ($ws_lauf_cfg as $k => $v) {
         /* O10 (Durchgang 02.10.2026): das Fritz!Box-Kennwort nur als "gesetzt
          * (n Zeichen)"; bis 3.2.9 standen hier seine ersten drei Zeichen. */
         printf("%-26s = %s\n", $k, $k === 'BASE.FRITZBOX_PASS' ? ws_kennwort_anzeige($v)
@@ -125,15 +126,15 @@ if (isset($_GET['diag'])) {
 
     $cron = ws_cron_current();
     printf("1. %-19s %s\n", ws_t('T.D_SCAN') . ':',
-        ws_cfg($cfg, 'BASE.ENABLED', '0') === '1' ? ws_t('T.EINGESCHALTET') : ws_t('T.AUS_GROSS'));
+        ws_cfg($ws_lauf_cfg, 'BASE.ENABLED', '0') === '1' ? ws_t('T.EINGESCHALTET') : ws_t('T.AUS_GROSS'));
     printf("   %-19s %s\n", ws_t('T.D_CRON') . ':', $cron !== '' ? $cron : ws_t('T.KEINE_GEFUNDEN'));
     printf("   %-19s %s\n\n", ws_t('T.D_EINGESTELLT') . ':',
-        sprintf(ws_t('T.ALLE_MINUTEN'), ws_cfg($cfg, 'BASE.CRON', '?')));
+        sprintf(ws_t('T.ALLE_MINUTEN'), ws_cfg($ws_lauf_cfg, 'BASE.CRON', '?')));
 
-    $bz = ws_bruecke_zustand($cfg);   // W22 (Gruppe 14): bereit statt Prozess
+    $bz = ws_bruecke_zustand($ws_lauf_cfg);   // W22 (Gruppe 14): bereit statt Prozess
     printf("2. %-19s %s\n", ws_t('T.D_BRUECKE') . ':',
         $bz === 'laeuft' ? ws_t('T.LAEUFT') : ($bz === 'aus' ? ws_t('T.BRUECKE_AUS') : ws_t('T.LAEUFT_NICHT_GROSS')));
-    printf("   %-19s %s\n", ws_t('T.D_ENDPUNKT_EIN') . ':', ws_endpunkt_ein($cfg) ? ws_t('ALLG.EIN') : ws_t('ALLG.AUS'));
+    printf("   %-19s %s\n", ws_t('T.D_ENDPUNKT_EIN') . ':', ws_endpunkt_ein($ws_lauf_cfg) ? ws_t('ALLG.EIN') : ws_t('ALLG.AUS'));
     $broker = ws_mqtt_broker();
     printf("   %-19s %s\n", 'MQTT Gateway:', $broker !== '' ? $broker : ws_t('T.NICHT_GEFUNDEN_KURZ'));
     $g = ws_mqtt_gateway_info();
@@ -216,7 +217,7 @@ if (isset($_GET['diag'])) {
     }
 
     echo "\n7. " . ws_t('T.D_ENDPUNKT') . ":\n";
-    echo '   ' . (ws_token($cfg) !== '' ? ws_t('T.TOKEN_DA') : ws_t('T.TOKEN_FEHLT')) . "\n";
+    echo '   ' . (ws_token($ws_lauf_cfg) !== '' ? ws_t('T.TOKEN_DA') : ws_t('T.TOKEN_FEHLT')) . "\n";
 
     echo "\n" . ws_t('T.H_HINWEISE') . ":\n";
     echo '- ' . ws_t('T.HINW_CRON') . "\n";
@@ -228,15 +229,15 @@ if (isset($_GET['diag'])) {
 /* ---------- Status (Vorgabe) ---------- */
 echo ws_strich(ws_t('T.H_STATUS')) . "\n";
 printf("%-18s %s, %s\n", ws_t('T.D_SCAN') . ':',
-    ws_cfg($cfg, 'BASE.ENABLED', '0') === '1' ? ws_t('T.EIN') : ws_t('T.AUS'),
-    sprintf(ws_t('T.ALLE_MINUTEN'), ws_cfg($cfg, 'BASE.CRON', '?')));
+    ws_cfg($ws_lauf_cfg, 'BASE.ENABLED', '0') === '1' ? ws_t('T.EIN') : ws_t('T.AUS'),
+    sprintf(ws_t('T.ALLE_MINUTEN'), ws_cfg($ws_lauf_cfg, 'BASE.CRON', '?')));
 printf("%-18s %s\n", ws_t('T.D_MODUS') . ':', $mode);
-printf("%-18s %s\n", 'Fritz!Box:', ws_cfg($cfg, 'BASE.FRITZBOX', '-') . ':' . ws_cfg($cfg, 'BASE.FRITZBOX_PORT', '-')
-    . (ws_cfg($cfg, 'BASE.FRITZBOX_USER', '') !== '' ? ' (' . ws_t('T.MIT_ANMELDUNG') . ')' : ''));
-printf("%-18s %s\n", ws_t('T.D_WEG') . ':', ws_cfg($cfg, 'BASE.UDP_ENABLE', '0') === '1'
-    ? sprintf(ws_t('T.UDP_AN_PORT'), ws_cfg($cfg, 'BASE.PORT', '-')) : 'MQTT');
+printf("%-18s %s\n", 'Fritz!Box:', ws_cfg($ws_lauf_cfg, 'BASE.FRITZBOX', '-') . ':' . ws_cfg($ws_lauf_cfg, 'BASE.FRITZBOX_PORT', '-')
+    . (ws_cfg($ws_lauf_cfg, 'BASE.FRITZBOX_USER', '') !== '' ? ' (' . ws_t('T.MIT_ANMELDUNG') . ')' : ''));
+printf("%-18s %s\n", ws_t('T.D_WEG') . ':', ws_cfg($ws_lauf_cfg, 'BASE.UDP_ENABLE', '0') === '1'
+    ? sprintf(ws_t('T.UDP_AN_PORT'), ws_cfg($ws_lauf_cfg, 'BASE.PORT', '-')) : 'MQTT');
 printf("%-18s %s\n", ws_t('T.D_BRUECKE') . ':',
-    ws_bruecke_bereit($cfg) ? ws_t('T.LAEUFT') : ws_t('T.LAEUFT_NICHT'));
+    ws_bruecke_bereit($ws_lauf_cfg) ? ws_t('T.LAEUFT') : ws_t('T.LAEUFT_NICHT'));
 printf("%-18s %s\n", 'Cron:',
     ws_cron_current() !== '' ? ws_cron_current() : ws_t('T.KEINE_VERKNUEPFUNG'));
 printf("%-18s %s\n\n", ws_t('T.D_LETZTER') . ':',

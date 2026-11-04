@@ -699,6 +699,10 @@ if ($ohne_aussage) {
 # dauerhaft um 1 auseinander (Pruefer code Nr. 12).
 my $zaehler = zaehler_lesen();
 zustand_schreiben($lauf_ok, $stoerung, \@users, $zaehler);
+# Seit 3.2.17: nur der Ausfall des Scanners als Ansage, nie Ankunft oder Anwesenheit. Die Bruecke legt nur hin und kehrt zurueck; Flanke, Frist und Regeln rechnet sie.
+if ($fritz_konfig || $active_scan) {
+    system('sh', '-c', 'exec php "$0" "$@" >/dev/null 2>&1', "$lbpbindir/ws_ansage.php", 'ausfall', ($lauf_ok ? '0' : '1'), $lbpplugindir, '', '900');
+}
 sendFoundUsers(\@users, $lauf_ok, $zaehler);
 
 if ($abgewiesen) {

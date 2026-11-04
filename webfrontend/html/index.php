@@ -88,7 +88,9 @@ function ws_par($name, $max = 128)
 $ws_token_ein = ws_par('token', 128);
 $ws_aktion    = ws_par('aktion', 32);
 $ws_wert      = ws_par('wert', 32);
-$ws_selftest  = isset($_GET['selftest']);
+/* 3.2.17 (Nachzug 01.11.2026, wie Renault NG 2.1.23): !empty statt isset - bis 3.2.16 galt auch ?selftest=0 und ?selftest= als Selbsttest,
+ * und eine Adresse mit diesem Anhang tat nie etwas anderes. */
+$ws_selftest  = !empty($_GET['selftest']);
 $ws_json      = isset($_GET['json']);
 
 /* ------------------------------------------------------------------

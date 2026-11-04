@@ -456,6 +456,19 @@ if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $ws_rei
  * Adresse verschwand aus der Konfiguration (Pruefer Oberflaeche Nr. 2, 7, 8).
  * Ausnahme nach Entscheidung 19: Leerraum am Rand wird still abgeschnitten.
  */
+/* Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+if ((isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') && isset($_POST['ansage_test'])) {
+    list($ws_at, $ws_ag) = ws_ansage_test();
+    if ($ws_at) { $ws_meldungen[] = ws_e(ws_t('ANSAGEPLUGIN.M_TEST_OK')); } else { $ws_fehler[] = ws_e(ws_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $ws_ag); }
+    $ws_tab = 'tab-settings';
+}
+if ((isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') && isset($_POST['ansage_speichern'])) {
+    list($ws_ao, $ws_af, $ws_ah) = ws_ansage_post($_POST);
+    if ($ws_af) { foreach ($ws_af as $ws_ax) { $ws_fehler[] = ws_e($ws_ax); } }
+    elseif ($ws_ao) { $ws_meldungen[] = ws_e(trim(ws_t('ANSAGEPLUGIN.M_OK') . ' ' . implode(' ', $ws_ah))); }
+    else { $ws_fehler[] = ws_e(ws_t('ANSAGEPLUGIN.M_FEHL')); }
+    $ws_tab = 'tab-settings';
+}
 if (isset($_SERVER['REQUEST_METHOD'])
         && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $neu = ws_config_read();
@@ -1251,6 +1264,7 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 </div>
 </form>
 
+<?= ws_ansage_form_html('<input data-role="none" type="hidden" name="fmt" value="' . ws_e($ws_fmt) . '"><input data-role="none" type="hidden" name="activetab" value="tab-settings">') ?>
 <h2><?= ws_e(ws_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= ws_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= ws_t('EINST.SICH_WARNUNG') ?></div>
