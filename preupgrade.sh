@@ -18,10 +18,10 @@ PDIR="${3:-wifi_ng}"
 if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
    || [ ! -f "$BASE/config/system/general.json" ]; then
     echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt ('$BASE') - nichts angefasst."
-    exit 0
+    exit 2
 fi
 case "$PDIR" in
-    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PDIR' - nichts angefasst."; exit 0 ;;
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PDIR' - nichts angefasst."; exit 2 ;;
 esac
 
 # ---------- Marke "Aktualisierung laeuft" ----------
@@ -64,11 +64,35 @@ if [ -s "$WS_MARKE" ]; then
     chmod 0644 "$WS_MARKE" 2>/dev/null
     echo "<OK> Start und Oberflaeche bis zum Ende der Installation gesperrt."
 else
-    echo "<WARNING> Die Marke $WS_MARKE liess sich nicht anlegen - die Befehlsbruecke"
-    echo "<WARNING> kann waehrend der Installation starten, und ein Aufruf der"
-    echo "<WARNING> Oberflaeche kann in dieser Zeit die Zweitschrift der"
-    echo "<WARNING> Einstellungen ueberschreiben."
+    # 05.11.2026: ohne Marke haelt die Installation das Update fuer eine Neuinstallation und legt die Einstellungen beiseite; bis hierher nur eine Warnung.
+    rm -f "$WS_MARKE" 2>/dev/null
+    echo "<FAIL> Die Marke $WS_MARKE liess sich nicht anlegen - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if ( : > "$zs_neu" ) 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    rm -f "$WS_MARKE" 2>/dev/null
+    exit 2
+}
 
 # ---------- Gruppe 14: Befehlsbruecke und Haus-Abnehmer NACH der Marke anhalten ----------
 # befehlsbruecke.sh start und ws_haus.sh start sowie ihre Waechter (cron.01min) pruefen dieselbe Marke und
@@ -291,6 +315,7 @@ if [ -d "$KONF" ]; then
     else
         echo "<WARNING> Die Konfiguration liess sich NICHT vollstaendig sichern"
         echo "<WARNING> (cp Rueckgabewert $CP_RC; nicht in der Sicherung: ${ABWEICHEND:-keine})."
+        ZS_FEHL="$ZS_FEHL Konfiguration"
     fi
 else
     echo "<INFO> Keine Konfiguration vorhanden."
@@ -317,6 +342,7 @@ if [ "$SICHER_OK" = "1" ]; then
         rm -rf "$NEU" 2>/dev/null
         echo "<WARNING> Die neue Sicherung liess sich nicht an ihren Platz bringen."
         echo "<WARNING> Platz und Rechte in $BASE/data/plugins pruefen."
+        ZS_FEHL="$ZS_FEHL Update-Sicherung"
     fi
 else
     rm -rf "$NEU" 2>/dev/null
@@ -353,16 +379,15 @@ netz_zweitschrift() {   # netz_zweitschrift cfg|abo <datei>
         fi
         return 0
     fi
-    rm -f "$ziel.neu" 2>/dev/null
-    if cp -p "$quelle" "$ziel.neu" 2>/dev/null && chmod 0600 "$ziel.neu" 2>/dev/null \
-            && cmp -s "$quelle" "$ziel.neu" && mv -f "$ziel.neu" "$ziel" 2>/dev/null; then
+    if zs_hinlegen "$quelle" "$ziel"; then
         echo "<OK> Zweitschrift von $2 angelegt."
     else
-        rm -f "$ziel.neu" 2>/dev/null
         echo "<WARNING> Die Zweitschrift von $2 liess sich nicht schreiben; die bisherige bleibt."
+        ZS_FEHL="$ZS_FEHL $2"
     fi
 }
 netz_zweitschrift abo mqtt_subscriptions.cfg
 netz_zweitschrift cfg wifi_scanner.cfg
 
+zs_schluss
 exit 0

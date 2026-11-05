@@ -344,6 +344,8 @@ my $anzahl = scalar(@users);
 
 my $user_online = 0;
 my $stoerung = '';
+# 3.2.20 (WS-2): der Grund, wenn ein Suchwerkzeug nicht laufen konnte (fehlt, sudo verweigert, Fehler statt "keine Antwort").
+our $werkzeug_fehler = '';
 # C2 (Durchgang 02.10.2026): ob die Fritz!Box-Abfrage EINGESCHALTET ist, steht
 # hier fest - $fritz_enable wird bei einer Stoerung weiter unten auf 0 gesetzt.
 # Bis 3.2.9 fragte der Hinweis "Weder ... eingeschaltet" danach und ueberschrieb
@@ -615,6 +617,8 @@ if ($active_scan) {
         }
         $users[$i]{GESCANNT} = 1;
         LOGINF "Pinging Devices for user: $users[$i]{NAME}";
+        my $fehler_vorher = $werkzeug_fehler;
+        $werkzeug_fehler = '';
 
         my $gefunden = 0;
         foreach my $ip (@{$users[$i]{IPS}}) {
@@ -627,7 +631,7 @@ if ($active_scan) {
                 last;
             }
         }
-        next if ($gefunden);
+        if ($gefunden) { $werkzeug_fehler = $fehler_vorher; next; }
 
         foreach my $mac (@{$users[$i]{MACS}}) {
             LOGINF "Trying to get ip address for $mac";
@@ -653,6 +657,13 @@ if ($active_scan) {
                 last;
             }
         }
+        # 3.2.20 (WS-2): "nicht gefunden" gilt nur, wenn die Werkzeuge liefen.
+        $users[$i]{WERKZEUG_STOERUNG} = 1 if ($werkzeug_fehler ne '' && !$users[$i]{ONLINE});
+        $werkzeug_fehler = $fehler_vorher if ($werkzeug_fehler eq '');
+    }
+    if ($werkzeug_fehler ne '') {
+        $stoerung = "Suchwerkzeug: $werkzeug_fehler" if ($stoerung eq '');
+        LOGERR "Suchwerkzeug: $werkzeug_fehler";
     }
 }
 
@@ -686,6 +697,9 @@ my $ohne_aussage = 0;
 foreach my $u (@users) {
     my $box_stumm = $u->{FRITZ_STOERUNG} || ($fritz_gestoert && @{$u->{MACS}});
     my $gemessen = ($fritz_konfig || $active_scan) && (!$box_stumm || $u->{GESCANNT} || $u->{ONLINE});
+    # 3.2.20 (WS-2): bis 3.2.19 hiess ein fehlendes arping oder eine sudo-Absage "alle abwesend", retained, status/ok=1.
+    # Ausfall ist nicht abwesend, wie bei der Box. Hat die Box ueber die Person etwas gesagt, bleibt das gueltig.
+    $gemessen = 0 if ($u->{WERKZEUG_STOERUNG} && !$u->{ONLINE} && !($fritz_konfig && !$box_stumm));
     $u->{AUSSAGE} = $gemessen ? 1 : 0;
     $ohne_aussage++ if (!$gemessen);
 }
@@ -767,6 +781,12 @@ sub mac2ip
             foreach my $zeile (split(/\n/, $out)) {
                 next if ($zeile !~ /\Q$mac\E/i);
                 my @sp = split(/\s+/, $zeile);
+                # 3.2.20 (WS-1): statische Eintraege der Vorfassungen abraeumen, sie halten bis zum Neustart.
+                if (@sp >= 4 && $v->is_ipv4($sp[0]) && $sp[3] =~ /M/) {
+                    LOGINF "Removing static arp entry $sp[0] of an earlier version";
+                    lauf('sudo', $ARP, '-d', $sp[0]);
+                    next;
+                }
                 if (@sp && $v->is_ipv4($sp[0])) { $ip = $sp[0]; last; }
             }
         }
@@ -780,6 +800,7 @@ sub mac2ip
         }
         my ($rc, $out, $err) = lauf('sudo', $ARPSCAN, "--destaddr=$mac",
                                     '--localnet', '-N', '--ignoredups');
+        werkzeug_lage('arp-scan', $rc, $err);
         $ip = "";
         foreach my $zeile (split(/\n/, $out)) {
             next if ($zeile !~ /\Q$mac\E/i);
@@ -787,12 +808,11 @@ sub mac2ip
             if (@sp && $v->is_ipv4($sp[0])) { $ip = $sp[0]; last; }
         }
         if ($v->is_ipv4($ip)) {
-            if ($use_cache) {
-                LOGINF "Found $ip, adding the mac to arp table (cache)";
-                lauf('sudo', $ARP, '-s', $ip, $mac);
-            } else {
-                LOGDEB "Found $ip";
-            }
+            # 3.2.20 (WS-1): kein "arp -s" mehr. Der statische Eintrag hielt bis zum Neustart des LoxBerry die alte IP fest:
+            # Handy mit neuer IP abwesend, obwohl da; ein anderes Geraet auf der alten IP liess die Person anwesend
+            # erscheinen und war vom LoxBerry aus nicht mehr erreichbar, weil aller Verkehr an die falsche MAC ging.
+            # Die Tabelle pflegt der Kernel selbst und laesst alte Eintraege verfallen.
+            LOGDEB "Found $ip";
         } else {
             my $grund = ($err ne '') ? $err : "arp-scan lieferte keinen Treffer";
             chomp($grund);
@@ -803,6 +823,21 @@ sub mac2ip
         LOGDEB "Found $ip";
     }
     return $ip;
+}
+
+# 3.2.20 (WS-2): konnte das Werkzeug laufen? Rueckgabe von system(): -1 nicht startbar, sonst Status (Exit * 256). Exit 1
+# heisst "keine Antwort", ab 2 Fehler (ping, arping); sudo meldet Absage und fehlendes Programm auf stderr mit Exit 1.
+sub werkzeug_lage
+{
+    my ($name, $rc, $err) = @_;
+    my $exit = ($rc == -1) ? 255 : ($rc >> 8);
+    my $sudo = (defined $err && $err =~ /^sudo:/m) ? 1 : 0;
+    return 1 if (!$sudo && $exit <= 1 && ($rc == -1 || ($rc & 127) == 0));
+    my $text = (defined $err && $err ne '') ? $err : "Rueckgabe $exit";
+    chomp($text);
+    $text =~ s/\s+/ /g;
+    $werkzeug_fehler = "$name: " . substr($text, 0, 120) if ($werkzeug_fehler eq '');
+    return 0;
 }
 
 sub ping
@@ -842,6 +877,7 @@ sub ping
         LOGINF "Host $ziel is online";
         return 1;
     }
+    werkzeug_lage(($cmd[0] eq 'sudo') ? $ARPING : $cmd[0], $rc, $err);
     LOGINF "Host $ziel is offline";
     return 0;
 }

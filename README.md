@@ -9,6 +9,14 @@ Holland](https://github.com/Gagi2k/LoxBerry-Plugin-WifiScanner) (Apache
 License 2.0). Herkunft und die vollständige Liste der Änderungen stehen in
 [NOTICE](NOTICE).
 
+## Neu in 3.2.20
+
+- **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
+- **Sprechtoken:** Ein von Hand eingetragenes Alexa- oder Google-Token wird nicht mehr vom Token des Nachbar-Plugins überschrieben.
+- **Handy mit neuer IP:** Das Plugin legt keine festen ARP-Einträge mehr an und räumt alte weg. Bisher hielten sie bis zum Neustart die alte IP fest: falsche An- oder Abwesenheit, und ein anderes Gerät auf dieser IP war vom LoxBerry aus nicht erreichbar.
+- **Werkzeug fehlt:** Fehlt `arping` oder `arp-scan` oder verweigert sudo, gilt das nicht mehr als „alle abwesend“: Betroffene Personen stehen über MQTT auf -1, `status/ok` auf 0, mit dem Grund.
+- **Formular:** Ein beanstandeter Tafel- oder HomePod-Name bleibt zur Korrektur im Feld stehen.
+
 ## Neu in 3.2.19
 
 - Vor einem Download wird jeder offene Ausgabepuffer geleert: PHP-Warnungen oder Reste landen nicht mehr in der heruntergeladenen Vorlage oder Sicherung.
@@ -305,7 +313,7 @@ Dreifache des Takts.
 | `FRITZBOX_ENABLE` | Router fragen (0/1) |
 | `FRITZBOX`, `FRITZBOX_PORT` | Adresse und Port der Fritz!Box |
 | `ACTIVE_SCAN` | Anpingen (0/1) |
-| `USE_CACHE` | Gefundene IP-Adressen merken. Spart Suchläufe; bei häufig wechselnden Adressen besser aus |
+| `USE_CACHE` | Zuerst die ARP-Tabelle des LoxBerry lesen. Spart Suchläufe; seit 3.2.20 legt das Plugin dort keine festen Einträge mehr an |
 | `CRON` | Takt in Minuten |
 | `ENABLED` | Regelmäßiges Suchen (0/1) |
 | `UDP_ENABLE`, `PORT` | UDP-Versand und Zielport |
