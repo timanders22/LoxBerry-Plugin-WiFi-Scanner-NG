@@ -142,6 +142,19 @@ if ($ws_selftest) {
     ws_ende(200, 'SELFTEST;OK=1;TOKEN=OK');
 }
 
+/* ---------------- Unbrauchbare Aktion (3.2.23) ----------------
+ * ws_par() gibt '' zurueck, wenn "aktion" fehlt, aber auch, wenn sie laenger als 32 Zeichen oder ein Feld
+ * (aktion[]=) ist. Bis 3.2.22 war ein solcher Aufruf damit eine ABFRAGE: er bekam HTTP 200 und die Antwortzeile,
+ * als waere nichts geschehen, statt abgewiesen zu werden (CLAUDE.md 4: nie still zurechtbiegen). Gemessen mit
+ * Pruefung-WiFi-Scanner-NG-3.2.23/endpunkt_index.json, Fall "eingeschleust in aktion (lang, ueber 32 Zeichen)".
+ * Jetzt: erst das Merkwort, dann 400 ERR=AKTION - wie fuer jede unbekannte Aktion. */
+if ($ws_aktion === '' && isset($_GET['aktion']) && $_GET['aktion'] !== '') {
+    if (!ws_token_ok($ws_soll, $ws_token_ein)) {
+        ws_ende(403, 'WIFI;OK=0;ERR=TOKEN');
+    }
+    ws_ende(400, 'WIFI;OK=0;ERR=AKTION');
+}
+
 /* ---------------- Ausloesende Aufrufe ----------------
  * Weissliste: was hier nicht steht, wird abgewiesen. */
 if ($ws_aktion !== '') {

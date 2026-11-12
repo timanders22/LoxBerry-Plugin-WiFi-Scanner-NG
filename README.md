@@ -9,6 +9,12 @@ Holland](https://github.com/Gagi2k/LoxBerry-Plugin-WifiScanner) (Apache
 License 2.0). Herkunft und die vollständige Liste der Änderungen stehen in
 [NOTICE](NOTICE).
 
+## Neu in 3.2.23
+
+- **Endpunkt:** Ein Aufruf mit einem Parameter `aktion`, der länger als 32 Zeichen oder als Feld (`aktion[]=`) übergeben ist, wird jetzt mit HTTP 400 `ERR=AKTION` abgewiesen, wie jede unbekannte Aktion; ohne gültiges Merkwort weiter mit 403 `ERR=TOKEN`. Bis 3.2.22 behandelte der Endpunkt einen solchen Aufruf wie eine Abfrage und antwortete mit HTTP 200 und der Antwortzeile, als wäre nichts geschehen. Ausgelöst wurde dabei nichts.
+- **Konfiguration:** Die zweite Kopfzeile von `wifi_scanner.cfg` trägt nicht mehr Datum und Uhrzeit des Speicherns, sondern den festen Text `; WiFi Scanner NG`. Bisher war jedes Speichern eine inhaltliche Änderung der Datei, auch wenn kein Wert geändert war. Wann die Datei geschrieben wurde, steht in ihrem Änderungsdatum. Gelesen wird die Zeile von niemandem; am Verhalten ändert sich nichts.
+- Gemessen ist das mit einem Prüfstand unter PHP 7.4, 8.4 und 8.5 auf dem Arbeitsrechner, nicht am Gerät.
+
 ## Neu in 3.2.22
 
 - **Ansage-Brücke des Dienstes:** `bin/ws_ansage.php` nimmt eine LoxBerry-Wurzel nur noch an, wenn `config/plugins`, `data/plugins` und `config/system/general.json` vorhanden sind; sonst antwortet es mit `KENNUNG=WURZEL` und Rückgabewert 1.

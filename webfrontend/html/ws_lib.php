@@ -394,7 +394,12 @@ function ws_config_write($cfg)
         return strnatcmp($a, $b);
     });
 
-    $txt = "; Config::Simple 4.59\n; " . date('D M j H:i:s Y') . "\n\n";
+    /* 3.2.23: die zweite Kopfzeile trug bis 3.2.22 Datum und Uhrzeit wie bei Config::Simple. Damit war jedes
+     * Speichern eine inhaltliche Aenderung, auch ohne geaenderten Wert, und Werkzeuge/wirkungstest.py meldete bei
+     * jedem Lauf einen Unterschied in dieser Datei (Regeln/02: der Zeitstempel gehoert nicht in den Inhalt, wann
+     * die Datei geschrieben wurde, sagt ihr Aenderungsdatum). Gelesen wird die Zeile von niemandem: Config::Simple
+     * und ws_config_read() ueberspringen Kommentarzeilen. */
+    $txt = "; Config::Simple 4.59\n; WiFi Scanner NG\n\n";
     foreach ($sections as $sec => $keys) {
         $txt .= '[' . $sec . "]\n";
         foreach ($keys as $k => $v) {
