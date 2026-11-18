@@ -9,6 +9,23 @@ Holland](https://github.com/Gagi2k/LoxBerry-Plugin-WifiScanner) (Apache
 License 2.0). Herkunft und die vollständige Liste der Änderungen stehen in
 [NOTICE](NOTICE).
 
+## Neu in 3.2.24
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen mit dem gemeinsamen Sicherungsmodul 1.2.11:** Die beiden Knöpfe im Reiter *Einstellungen* verhalten sich jetzt wie in den übrigen Plugins dieser Reihe.
+  - Zwischen dem Feld für die Sicherungsdatei und dem Knopf *Zurückspielen* steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Die Datei darf jetzt bis 256 KB groß sein (bisher 64 KB).
+  - Eine Einstellung in der Datei, die diese Fassung nicht kennt, weist die Datei nicht mehr als Ganzes ab. Sie wird verworfen und in der Meldung mit ihrem Namen genannt, nie mit ihrem Wert; die übrigen Einstellungen werden zurückgespielt.
+  - Ein leerer Wert in der Datei überschreibt keinen gesetzten; der bisherige bleibt und wird genannt. Für das Merkwort galt das schon bisher.
+  - Eine Datei mit einem unzulässigen Wert, mit einer Person ohne Name oder Adressliste oder mit einer falschen Personenzahl ändert weiter gar nichts.
+  - Einträge der geltenden `wifi_scanner.cfg`, die diese Fassung nicht kennt, fallen beim Zurückspielen weg und werden mit Namen genannt.
+  - Die neue Sicherungsdatei trägt einen Kopf mit Kennzeichen und Fassung (`_plugin`, `_fassung`) und führt den Abschnitt `BASE` und die Personen (`USER`) als eigene Abschnitte. Sicherungen der Fassungen bis 3.2.23 werden weiter angenommen; die Meldung sagt „ältere Sicherung erkannt“.
+  - Fehlen in einer Sicherung bis 3.2.14 die fünf Einstellungen aus 3.2.15 (Endpunkt, Befehle über MQTT, eingreifende Befehle, Haus-Abnehmer, Weckpaket), behalten sie jetzt ihren geltenden Wert, wie in allen Plugins dieser Reihe. Bisher bekamen sie einen Übergangswert (Endpunkt an, wenn ein Merkwort da war).
+  - Nach dem Zurückspielen sagt die Meldung, was mit dem Zeitplan geschah.
+- **Eine Zweitschrift statt zwei:** Die Oberfläche schreibt die Zweitschrift jetzt unter `<ordner>.backup.wifi_scanner.cfg`, demselben Namen, den das Update anlegt und nach einem Verlust zurückspielt. Bisher schrieb sie daneben eine zweite unter `<ordner>.wifi_scanner.backup`. Das Update übernimmt diese, wenn sie jünger ist, und entfernt den alten Namen danach; ebenso das nächste Speichern.
+- **Knopf „Dokumentation“:** `plugin.cfg` nennt jetzt `WEBSITE=` mit diesem Repository.
+- `check.pl` liest `wifi_scanner.cfg` unverändert; ihr Format hat sich nicht geändert.
+- Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt; Sicherungen aller 24 Fassungen 3.2.0 bis 3.2.23 werden angenommen. Am Gerät nicht gemessen.
+- **Sicherungsmodul 1.2.11:** Wandelt ein Plugin beim Zurückspielen eine Sicherung aus einer Textdatei um, sagt die Meldung das jetzt mit einem gemeinsamen Satz, und Mängel darin werden in allen Plugins mit denselben Bezeichnungen genannt. Dieses Plugin wandelt keine Textdateien um; an seinem Verhalten ändert sich dadurch nichts. Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4. Am Gerät nicht gemessen.
+
 ## Neu in 3.2.23
 
 - **Endpunkt:** Ein Aufruf mit einem Parameter `aktion`, der länger als 32 Zeichen oder als Feld (`aktion[]=`) übergeben ist, wird jetzt mit HTTP 400 `ERR=AKTION` abgewiesen, wie jede unbekannte Aktion; ohne gültiges Merkwort weiter mit 403 `ERR=TOKEN`. Bis 3.2.22 behandelte der Endpunkt einen solchen Aufruf wie eine Abfrage und antwortete mit HTTP 200 und der Antwortzeile, als wäre nichts geschehen. Ausgelöst wurde dabei nichts.

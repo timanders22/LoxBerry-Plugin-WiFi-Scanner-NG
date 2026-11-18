@@ -812,19 +812,17 @@ if (isset($_SERVER['REQUEST_METHOD'])
 
 /* ---------------- Einstellungen sichern ----------------
  *
- * Ausgegeben wird die VOLLE Konfiguration - samt Merkwort. Ohne es stuenden
- * nach dem Zurueckspielen alle Felder richtig, und der Miniserver kaeme
- * trotzdem nicht an den Endpunkt; die Datei waere als Umzugshilfe wertlos.
- * Damit traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das.
- *
- * Das Formularmerkmal gehoert ausdruecklich NICHT hinein - es wird aus dem
- * Merkwort abgeleitet und lebt eine Sitzung lang. */
+ * Seit 3.2.24 ueber das gemeinsame Sicherungsmodul (ws_sicherung_json(), Kennzeichen
+ * LoxBerry-Plugin-WiFi-Scanner-NG): lesbarer Kopf _hinweis/_plugin/_fassung/_stand, der Abschnitt [BASE] als Block
+ * BASE, die Personen als Liste USER, die Sprachansagen ohne Sprechtoken. Ausgegeben wird die VOLLE Konfiguration -
+ * samt Merkwort. Ohne es stuenden nach dem Zurueckspielen alle Felder richtig, und der Miniserver kaeme trotzdem
+ * nicht an den Endpunkt; die Datei waere als Umzugshilfe wertlos. Damit traegt sie ein Geheimnis, und der Hinweis am
+ * Knopf sagt das. Das Formularmerkmal gehoert ausdruecklich NICHT hinein - es wird aus dem Merkwort abgeleitet und
+ * lebt eine Sitzung lang. */
 if (isset($_SERVER['REQUEST_METHOD'])
         && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ws_sichern'])) {
-    list($ws_kopf, $ws_werte) = ws_sicherung_inhalt();
-    $ws_js = json_encode(array_merge($ws_kopf, $ws_werte),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($ws_js !== false) {
+    $ws_js = ws_sicherung_json();
+    if ($ws_js !== '') {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="wifi_einstellungen_'
@@ -834,42 +832,49 @@ if (isset($_SERVER['REQUEST_METHOD'])
         echo $ws_js;
         exit;
     }
-    $ws_fehler[] = ws_t('EINST.SICH_SCHREIBFEHLER');
+    $ws_fehler[] = ws_e(ws_t('EINST.SICH_SCHREIBFEHLER'));
 }
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
- * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
- * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
- * nicht erst gelesen.
- *
- * Und danach wird der Dienst NACHGEZOGEN: Zeitplan und (seit 3.2.15, ohne
- * Listener) die Zustaende status/mode, /interval, /enabled. */
+ * Seit 3.2.24 prueft den Eingang das gemeinsame Sicherungsmodul (sicherung_eingang()) - in jeder Linie gleich: zuerst
+ * der Haken zurueck_ok (ohne ihn wird nichts gelesen und nichts geaendert), dann is_uploaded_file() und die
+ * Groessengrenze des Moduls (bis 3.2.23: 64 kB hier); erst danach wird die Datei gelesen. Lesen, Pruefen, Speichern,
+ * Zweitschrift messen und Protokollzeile macht sicherung_zurueckspielen(): Unbekanntes wird verworfen und mit Namen
+ * genannt, ein leerer Wert laesst den bisherigen stehen (auch ein leeres Merkwort, bis 3.2.23 O6), eine halb gueltige
+ * Datei aendert GAR NICHTS (alle Beanstandungen gesammelt). Gespeichert wird genau der Stand, den das Modul liefert
+ * (ws_config_write(), zieht die Zweitschrift mit). Danach wie bis 3.2.23 der Dienst NACHGEZOGEN: Zeitplan, beim
+ * Wechsel auf UDP das Abraeumen, sonst die ausgetragenen Personen und die Zustaende status/mode, /interval, /enabled -
+ * und die Meldung sagt, was mit dem Zeitplan geschah (Regeln/05). */
 if (isset($_SERVER['REQUEST_METHOD'])
         && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ws_zurueck'])) {
-    if (!isset($_FILES['ws_sicherung']) || !is_array($_FILES['ws_sicherung'])
-        || !isset($_FILES['ws_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['ws_sicherung']['tmp_name'])) {
-        $ws_fehler[] = ws_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['ws_sicherung']['size'] > 65536) {
-        $ws_fehler[] = ws_t('EINST.SICH_ZU_GROSS');
+    $ws_sb = ws_sicherung_beschreibung();
+    list($ws_sroh, $ws_sab) = sicherung_eingang($ws_sb, $_POST, $_FILES, 'ws_sicherung');
+    if ($ws_sab !== null) {
+        $ws_sm = sicherung_meldungen($ws_sb, $ws_sab);
     } else {
         $ws_war_udp = ws_cfg($ws_cfg, 'BASE.UDP_ENABLE', '0') === '1';
         $ws_alt_r = ws_config_read();   // Frage 3: die Personen VOR dem Zurueckspielen
-        list($ws_neu, $ws_mangel, $ws_n, $ws_sh) = ws_sicherung_lesen(
-            (string) @file_get_contents($_FILES['ws_sicherung']['tmp_name']));
-        if ($ws_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
-             * wird nichts. */
-            $ws_fehler[] = ws_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $ws_mangel);
-        } elseif (ws_config_write($ws_neu)) {
-            ws_cron_apply(ws_cfg($ws_neu, 'BASE.ENABLED', '0'), ws_cfg($ws_neu, 'BASE.CRON', '3'));
-            $ws_meldungen[] = sprintf(ws_t('EINST.SICH_UEBERNOMMEN'), $ws_n);
-            foreach ($ws_sh as $ws_x) { $ws_hinweise[] = $ws_x; }
+        $ws_sb['vorbereiten'] = 'ws_sicherung_vorbereiten';
+        $ws_sb['speichern'] = 'ws_sicherung_speichern';
+        if ($ws_p['home'] !== '') {
+            // 3.2.24: die Zweitschrift <ordner>.backup.wifi_scanner.cfg neben dem Konfigordner (ws_paths()['backup'])
+            $ws_sb['zweitschrift'] = function () {
+                $q = ws_paths();
+                return array($q['config'], $q['backup']);
+            };
+        }
+        $ws_sb['nachziehen'] = function ($neu) use ($ws_war_udp, $ws_alt_r) {
+            global $ws_misslungen;
+            $h = array();
+            $flach = ws_sicherung_flach($neu);
+            $ein = ws_cfg($flach, 'BASE.ENABLED', '0');
+            ws_cron_apply($ein, ws_cfg($flach, 'BASE.CRON', '3'));
+            $h[] = $ein === '1' ? sprintf(ws_t('EINST.SICH_DIENST_AN'), ws_e(ws_cfg($flach, 'BASE.CRON', '3')))
+                                : ws_t('EINST.SICH_DIENST_AUS');
             /* O9: der Listener-Satz nur bei MQTT und "nachgezogen" nur bei Erfolg;
              * I6: bringt die Sicherung den Wechsel auf UDP, wird abgeraeumt. */
-            if (ws_cfg($ws_neu, 'BASE.UDP_ENABLE', '0') === '1') {
+            if (ws_cfg($flach, 'BASE.UDP_ENABLE', '0') === '1') {
                 if (!$ws_war_udp) {
                     ws_wechsel_auf_udp();
                 }
@@ -877,16 +882,25 @@ if (isset($_SERVER['REQUEST_METHOD'])
                 /* Frage 3 (Durchgang 02.10.2026, Entscheidungen 5/8/16): traegt die
                  * Sicherung Personen aus oder benennt sie um, bekommen deren alte
                  * Themen einmal "-" retained - wie M2 beim Speichern. */
-                $ws_ab = ws_ausgetragen_abraeumen($ws_alt_r, $ws_neu);
-                foreach ($ws_ab['ok'] as $ws_x) { $ws_meldungen[] = $ws_x; }
-                foreach ($ws_ab['nicht'] as $ws_x) { $ws_misslungen[] = $ws_x; }
+                $ab = ws_ausgetragen_abraeumen($ws_alt_r, $flach);
+                foreach ($ab['ok'] as $x) { $h[] = $x; }
+                foreach ($ab['nicht'] as $x) { $ws_misslungen[] = $x; }
                 ws_status_melden();
             }
+            return $h;
+        };
+        $ws_sb['log'] = 'ws_ansage_zeile';
+        $ws_sr = sicherung_zurueckspielen($ws_sb, $ws_sroh);
+        $ws_sm = sicherung_meldungen($ws_sb, $ws_sr);
+        if ($ws_sr['gespeichert']) {
             $ws_cfg = ws_config_read();
             $ws_fmt = ws_formtoken($ws_cfg);
-        } else {
-            $ws_fehler[] = ws_t('EINST.SICH_SCHREIBFEHLER');
         }
+    }
+    /* Die Saetze kommen fertig maskiert aus dem Modul (sicherung_e()); diese Seite gibt sie unmaskiert aus. */
+    foreach ($ws_sm['fehler'] as $ws_x) { $ws_fehler[] = $ws_x; }
+    if ($ws_sm['hinweise']) {
+        $ws_meldungen[] = implode(' ', $ws_sm['hinweise']);
     }
     $ws_tab = 'tab-settings';
 }
@@ -1271,7 +1285,7 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
 <h2><?= ws_e(ws_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= ws_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= ws_t('EINST.SICH_WARNUNG') ?></div>
-<?php $ws_x3 = ws_sicherung_warnungen($ws_cfg); if ($ws_x3) { ?>
+<?php $ws_x3 = ws_sicherung_eigene_maengel(); if ($ws_x3) { ?>
 <div class="sm-warnung"><?php printf(ws_t('EINST.SICH_X3'), ws_e(implode(', ', $ws_x3))); ?></div>
 <?php } ?>
 <div class="sm-knopfreihe">
@@ -1288,6 +1302,7 @@ if ($ws_alter >= 0 && !$ws_frisch) { ?>
     <input data-role="none" type="hidden" name="fmt" value="<?= ws_e($ws_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="ws_sicherung" accept=".json" style="max-width:320px;">
+    <?= sicherung_haken_zeile(ws_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ws_zurueck" value="1"><?= ws_e(ws_t('EINST.K_ZURUECK')) ?></button>
   </form>
 </div>

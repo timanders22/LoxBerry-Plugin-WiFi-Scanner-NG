@@ -1,5 +1,10 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+/* 3.2.24: die Abschrift des gemeinsamen Sicherungsmoduls (Stammfassung Werkzeuge/gemeinsam/sicherung.php, byte-gleich,
+ * Werkzeuge/sicherung_einbauen.py) liegt neben dieser Datei. "Einstellungen sichern" und "Einstellungen zurueckspielen"
+ * laufen darueber, in allen Linien gleich (Auftrag des Hausherrn 12.11.2026); diese Linie uebergibt nur ihre
+ * Beschreibung (ws_sicherung_beschreibung()). Antwortet als Einstieg mit 403. */
+require_once __DIR__ . '/sicherung.php';
 /**
  * WifiScanner - gemeinsame Hilfsfunktionen
  *
@@ -193,7 +198,13 @@ function ws_paths()
             'home'    => $home,
             'plugin'  => $dir,
             'config'  => $home . '/config/plugins/' . $dir . '/wifi_scanner.cfg',
-            'backup'  => $home . '/config/plugins/' . $dir . '.wifi_scanner.backup',
+            /* 3.2.24: die Zweitschrift heisst nach dem Hausstandard <ordner>.backup.wifi_scanner.cfg - derselbe Name,
+             * den preupgrade.sh seit jeher anlegt und postinstall.sh zurueckspielt. Bis 3.2.23 schrieb die Oberflaeche
+             * daneben eine zweite unter <ordner>.wifi_scanner.backup (zwei Verfahren fuer eine Datei, Regeln/05). Den
+             * alten Namen uebernimmt preupgrade.sh; ws_config_read() heilt notfalls aus ihm, ws_config_write() raeumt
+             * ihn ab, sobald die Zweitschrift unter dem neuen Namen steht. */
+            'backup'  => $home . '/config/plugins/' . $dir . '.backup.wifi_scanner.cfg',
+            'backup_alt' => $home . '/config/plugins/' . $dir . '.wifi_scanner.backup',
             'bindir'  => $home . '/bin/plugins/' . $dir,
             'logdir'  => $home . '/log/plugins/' . $dir,
             'datadir' => $home . '/data/plugins/' . $dir,
@@ -207,6 +218,7 @@ function ws_paths()
             'plugin'  => $dir,
             'config'  => $base . '/config/wifi_scanner.cfg',
             'backup'  => $base . '/config/wifi_scanner.backup',
+            'backup_alt' => '',
             'bindir'  => $base . '/bin',
             'logdir'  => sys_get_temp_dir(),
             'datadir' => $base . '/data',
@@ -307,8 +319,12 @@ function ws_config_read($erzeugen = true)
     /* Nicht heilen, solange die Marke gilt: in der Luecke holt postinstall.sh
      * die Zweitschrift zurueck und postupgrade.sh die Sicherung. Eine
      * Selbstheilung dazwischen legte nur einen dritten Stand daneben. */
-    if (!is_file($file) && $erzeugen && is_file($p['backup']) && !ws_upgrade_laeuft()) {
-        ws_selbstheilung($p['backup'], $file);   // W17 (Gruppe 14): unteilbar, 0600, Ergebnis geprueft
+    /* 3.2.24: aus der Zweitschrift unter dem Namen des Hausstandards; fehlt sie, aus der unter dem alten Namen
+     * (bis 3.2.23 schrieb die Oberflaeche nur diese). */
+    $ws_heil_aus = is_file($p['backup']) ? $p['backup']
+        : (($p['backup_alt'] !== '' && is_file($p['backup_alt'])) ? $p['backup_alt'] : '');
+    if (!is_file($file) && $erzeugen && $ws_heil_aus !== '' && !ws_upgrade_laeuft()) {
+        ws_selbstheilung($ws_heil_aus, $file);   // W17 (Gruppe 14): unteilbar, 0600, Ergebnis geprueft
     }
     if (!is_file($file)) {
         return $out;
@@ -455,6 +471,9 @@ function ws_config_write($cfg)
         @fclose($bh);
         if (!$ok || !@rename($btmp, $p['backup'])) {
             @unlink($btmp);
+        } elseif ($p['backup_alt'] !== '' && is_file($p['backup_alt'])) {
+            // 3.2.24: die Zweitschrift steht unter dem neuen Namen - die unter dem alten bleibt nicht verwaist liegen.
+            @unlink($p['backup_alt']);
         }
     }
     return true;
@@ -1321,24 +1340,6 @@ function ws_wert_pruefen($schluessel, $wert)
     return '';
 }
 
-/**
- * Eine Sicherungsdatei einlesen - mit einer Besonderheit dieser Linie.
- *
- * Die Konfiguration hat NICHT nur feste Schluessel: neben [BASE] traegt sie
- * je erfasster Person einen Abschnitt [USER1], [USER2], ... mit NAME und
- * MACS. Eine feste Liste wuerde USER2.NAME als "fremd" abweisen - und damit
- * genau die Sicherung ablehnen, die man zurueckspielen will.
- *
- * Deshalb gilt ein Schluessel als bekannt, wenn er entweder in ws_vorgaben()
- * steht oder der Form USER<zahl>.NAME beziehungsweise USER<zahl>.MACS
- * entspricht. Alles andere ist eine Beanstandung.
- *
- * Neu in 3.1.12 wird auch jeder WERT geprueft, und eine Beanstandung heisst
- * nach wie vor: es wird GAR NICHTS uebernommen. Eine zur Haelfte uebernommene
- * Konfiguration ist schlimmer als die alte, und man sieht es ihr nicht an.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
- */
 /** Die Sprachansagen aus dem Feld der Hauptkonfiguration: was fehlt, kommt aus den Vorgaben (ab Werk EIN). */
 function ws_ansage_block_lesen()
 {
@@ -1390,48 +1391,6 @@ function ws_ansage_wert($k, $w)
             return in_array($w, array(0, 1, '0', '1'), true);
     }
     return false;
-}
-
-/** Fuer die Sicherung: nie ein Sprechtoken, nie der Herkunftsvermerk. Ausgabeart, Ziele, Regeln und Haken reisen mit. */
-function ws_ansage_fuer_sicherung(array $c)
-{
-    unset($c['ansage_token_herkunft'], $c['ansage_aus_datei']);
-    if (isset($c['tts']) && is_array($c['tts'])) { $c['tts'] = ansage_sicherung_bereinigen($c['tts']); }
-    return $c;
-}
-
-/**
- * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
- * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
- */
-function ws_ansage_sicherung_vor($roh)
-{
-    $d = json_decode((string) $roh, true);
-    if (!is_array($d)) { return $roh; }
-    $inhalt = false;
-    foreach (array_keys($d) as $k) { if ((string) $k !== '' && ((string) $k)[0] !== '_') { $inhalt = true; } }
-    if (!$inhalt) { return $roh; }
-    $j = ws_ansage_cfg();
-    unset($d['ansage_token_herkunft'], $d['ansage_aus_datei']);
-    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
-    if (array_key_exists('tts', $d)) {
-        $g = '';
-        $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, ws_ansage_modi()) : null;
-        if (ansage_sicherung_mangel($d['tts']) || $p === null) {
-            $d['tts'] = 'ABGEWIESEN';
-        } else {
-            list($tv) = ansage_vervollstaendigen($p, 'aus');
-            $d['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
-        }
-    } else {
-        $d['tts'] = ws_tts($j);
-    }
-    foreach (array_diff(ws_ansage_schluessel(), array('tts', 'ansage_token_herkunft', 'ansage_aus_datei')) as $k) {
-        if (!array_key_exists($k, $d) && array_key_exists($k, $j)) { $d[$k] = $j[$k]; }
-    }
-    $d['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft']) ? $j['ansage_token_herkunft'] : array();
-    $d['ansage_aus_datei'] = 1;
-    return (string) json_encode($d);
 }
 
 /**
@@ -1818,138 +1777,375 @@ function ws_ansage_zeile($t)
     if ($f !== '' && is_dir(dirname($f))) { @file_put_contents($f, date('Y-m-d H:i:s') . ' Oberflaeche: ' . $t . "\n", FILE_APPEND | LOCK_EX); }
 }
 
-function ws_sicherung_lesen($roh)
+/* ==================================================================
+ * Einstellungen sichern und zurueckspielen - seit 3.2.24 ueber das gemeinsame Sicherungsmodul
+ * (sicherung.php, Stammfassung Werkzeuge/gemeinsam/sicherung.php 1.2.9; Auftrag des Hausherrn 18.11.2026,
+ * "Ja, umbauen"). Bis 3.2.23 standen hier eine eigene Bau- und Lesefunktion (ws_sicherung_inhalt(),
+ * ws_sicherung_lesen()): flache Schluessel BASE.X und USERn.NAME/MACS, Kopf _hinweis/_stand/_warnung ohne
+ * Kennzeichen, ein unbekannter Schluessel wies die ganze Datei ab, ein Haken fehlte. Diese Linie uebergibt jetzt
+ * nur ihre Beschreibung.
+ *
+ * Die Form, in der das Modul die Konfiguration sieht (und in der die Sicherung seit 3.2.24 steht): der Abschnitt
+ * [BASE] als Block "BASE" (ohne das Feld ANSAGE_BLOCK), die Personen [USER1], [USER2], ... als Liste "USER" mit
+ * NAME und MACS (Eintrag 1 ist USER1), die Sprachansagen aus BASE.ANSAGE_BLOCK als eigene Schluessel oben. Die Datei
+ * wifi_scanner.cfg bleibt im Format von Config::Simple; check.pl liest sie unveraendert.
+ * ================================================================== */
+
+/** Die Vorgaben in der Form des Moduls: BASE ohne ANSAGE_BLOCK, keine Personen, die Sprachansagen. */
+function ws_sicherung_vorgaben()
 {
-    $roh = ws_ansage_sicherung_vor($roh);     // Token und Vermerk bleiben die geltenden
-    $ws_d = json_decode((string) $roh, true);
-    if (is_array($ws_d)) { $ws_d['BASE.ANSAGE_BLOCK'] = ''; $roh = (string) json_encode($ws_d); }
-    $ws_ab = array();
-    $mangel = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(ws_t('EINST.SICH_KEIN_JSON')), 0);
+    $base = array();
+    foreach (ws_vorgaben() as $k => $v) {
+        if ($k !== 'BASE.ANSAGE_BLOCK') {
+            $base[substr($k, 5)] = $v;
+        }
     }
-    $neu = ws_vorgaben();
-    $bekannt = array_keys($neu);
-    $anzahl = 0;
-    $hinweise = array();
-    $token_leer = false;
+    return array('BASE' => $base, 'USER' => array()) + ws_ansage_vorgaben();
+}
+
+/**
+ * 3.2.24: die geltende Konfiguration in der Form des Moduls ('jetzt' und Grundlage beim Sichern). Gelesen wird die
+ * Datei selbst, ohne etwas auszusortieren (Bauform vom 15.11.2026): ein bekannter Schluessel in [BASE] bzw. NAME und
+ * MACS in [USERn] unabhaengig von Gross- und Kleinschreibung wie ws_config_read(); jeder andere behaelt seinen
+ * Namen, wie er in der Datei steht - in [BASE] im Block, in [USERn] im Eintrag, ohne Abschnitt oben, in einem
+ * fremden Abschnitt als Block dieses Namens. Das Zurueckspielen nennt ihn dann, wenn er wegfaellt. Die Sprachansagen
+ * kommen aus BASE.ANSAGE_BLOCK (was fehlt, aus den Vorgaben wie ws_ansage_block_lesen()). Liest nur, heilt nicht.
+ */
+function ws_sicherung_stand()
+{
+    $p = ws_paths();
+    $c = array('BASE' => array());
+    $users = array();
+    $roh = is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
+    $bekannt = array();
+    foreach (array_keys(ws_vorgaben()) as $k) {
+        $bekannt[substr($k, 5)] = true;
+    }
+    $sec = '';
+    $block = '';
+    foreach (preg_split('/\R/', $roh) as $line) {
+        $t = trim($line);
+        if ($t === '' || $t[0] === ';' || $t[0] === '#') {
+            continue;
+        }
+        if ($t[0] === '[' && substr($t, -1) === ']') {
+            $sec = trim(substr($t, 1, -1));
+            continue;
+        }
+        $pos = strpos($t, '=');
+        if ($pos === false) {
+            continue;
+        }
+        $key = trim(substr($t, 0, $pos));
+        $val = trim(substr($t, $pos + 1));
+        $len = strlen($val);
+        if ($len >= 2 && (($val[0] === '"' && $val[$len - 1] === '"') || ($val[0] === "'" && $val[$len - 1] === "'"))) {
+            $val = substr($val, 1, -1);
+        }
+        $su = strtoupper($sec);
+        $ku = strtoupper($key);
+        if ($su === 'BASE') {
+            if ($ku === 'ANSAGE_BLOCK') {
+                $block = $val;
+            } else {
+                $c['BASE'][isset($bekannt[$ku]) ? $ku : $key] = $val;
+            }
+        } elseif (preg_match('/^USER([0-9]+)$/', $su, $m) === 1) {
+            $users[(int) $m[1]][($ku === 'NAME' || $ku === 'MACS') ? $ku : $key] = $val;
+        } elseif ($sec === '') {
+            $c[$key] = $val;
+        } else {
+            if (!isset($c[$sec]) || !is_array($c[$sec])) {
+                $c[$sec] = array();
+            }
+            $c[$sec][$key] = $val;
+        }
+    }
+    $c['USER'] = array();
+    $n = $users ? max(array_keys($users)) : 0;
+    for ($i = 1; $i <= $n; $i++) {
+        $c['USER'][] = isset($users[$i]) ? $users[$i] : array();
+    }
+    $a = $block !== '' ? json_decode((string) base64_decode($block), true) : null;
+    $a = (is_array($a) ? $a : array()) + ws_ansage_vorgaben();
+    foreach (ws_ansage_schluessel() as $k) {
+        $c[$k] = $a[$k];
+    }
+    return $c;
+}
+
+/**
+ * Ein Stand in der Form des Moduls zurueck in die Schluessel von ws_config_read()/ws_config_write(): BASE.X,
+ * BASE.ANSAGE_BLOCK (die Sprachansagen als ein Feld, base64), USERn.NAME/MACS in der Reihenfolge der Liste.
+ */
+function ws_sicherung_flach(array $neu)
+{
+    $a = array();
+    foreach (ws_ansage_schluessel() as $k) {
+        if (array_key_exists($k, $neu)) {
+            $a[$k] = $neu[$k];
+        }
+    }
+    $flach = array('BASE.ANSAGE_BLOCK' => base64_encode((string) json_encode($a)));
+    foreach ((isset($neu['BASE']) && is_array($neu['BASE'])) ? $neu['BASE'] : array() as $k => $v) {
+        $flach['BASE.' . $k] = (string) $v;
+    }
+    $i = 0;
+    foreach ((isset($neu['USER']) && is_array($neu['USER'])) ? $neu['USER'] : array() as $u) {
+        $i++;
+        $flach['USER' . $i . '.NAME'] = (is_array($u) && isset($u['NAME'])) ? (string) $u['NAME'] : '';
+        $flach['USER' . $i . '.MACS'] = (is_array($u) && isset($u['MACS'])) ? (string) $u['MACS'] : '';
+    }
+    return $flach;
+}
+
+/**
+ * 3.2.24: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul.
+ *
+ * Kennzeichen: der Name des Repositorys (Bauform vom 15.11.2026). Die Sicherungen bis 3.2.23 trugen kein _plugin;
+ * der Uebersetzer (ws_sicherung_uebersetzer()) erkennt sie an ihrem Kopf und ihrer flachen Form und schreibt sie in
+ * die Form des Moduls um; die Meldung sagt "aeltere Sicherung erkannt".
+ *
+ * Inhalt: der Abschnitt [BASE] samt Merkwort BASE.TOKEN (ohne es kaeme der Miniserver nach einem Umzug nicht an den
+ * Endpunkt) und Fritz!Box-Kennwort BASE.FRITZBOX_PASS, die Personen, die Sprachansagen ohne Sprechtoken. Nie darin:
+ * das Formularmerkmal (abgeleitet, nie gespeichert) und die Vermerke ansage_token_herkunft, ansage_aus_datei.
+ *
+ * Was fehlen darf: jeder Schluessel in [BASE], den schon 3.2.0 schrieb (gemessen 18.11.2026 an den Archiven 3.2.0
+ * bis 3.2.24), ist Pflicht - wie bis 3.2.23; die fuenf Schluessel aus 3.2.15 (ENDPUNKT_EIN, BEFEHLE_MQTT_EIN,
+ * BEFEHLE_EINGREIFEND_EIN, HAUS_ABNEHMER, WECKPAKET) und die Sprachansagen (seit 3.2.17) behalten den geltenden
+ * Wert und werden genannt (Regel 6 der Welle 1, Entscheidung des Hausherrn 12.11.2026). Bis 3.2.23 bekamen die fuenf
+ * Schluessel einen Uebergangswert (ws_uebergang_wert()). In einer Person muessen NAME und MACS stehen (wie bis
+ * 3.2.23 EINST.SICH_USER_FEHLT, ws_sicherung_pruefen()).
+ *
+ * Geprueft wird jeder Wert mit ws_wert_pruefen() wie im Formular; quer wie bis 3.2.23: BASE.USERS nennt genau die
+ * Zahl der Personen, zwei Namen ergeben nicht dasselbe MQTT-Thema (ws_sicherung_quer()). Wie bis 3.2.23 wird eine
+ * Datei mit Sprechtoken im Block tts abgewiesen (ws_sicherung_vorbehandeln()).
+ */
+function ws_sicherung_beschreibung()
+{
+    $p = ws_paths();
+    $vorgaben = ws_sicherung_vorgaben();
+    $base = array();
+    foreach (array_keys($vorgaben['BASE']) as $k) {
+        $base[$k] = array('art' => 'wert', 'fehlt' => in_array('BASE.' . $k, ws_sicherung_spaeter(), true) ? 'behalten' : 'pflicht');
+    }
+    $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+    $schluessel = array(
+        'BASE' => array('art' => 'block', 'schluessel' => $base),
+        'USER' => sicherung_liste(array('NAME', 'MACS')),
+        'tts' => sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))))
+                 + array('sichern' => 'ansage_sicherung_bereinigen', 'fehlt' => 'behalten'),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array('fehlt' => 'behalten'),
+        'ansage_haken' => sicherung_block(array('ausfall')) + array('fehlt' => 'behalten'),
+    );
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-WiFi-Scanner-NG',
+        'hinweis' => ws_t('EINST.SICH_KOPF'),
+        /* Die Fassung im Kopf kommt aus der Plugin-Datenbank bzw. plugin.cfg (sicherung_fassung_lesen()). */
+        'home' => (string) $p['home'],
+        'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => $vorgaben,
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft', 'ansage_aus_datei'),
+        'uebersetzer' => 'ws_sicherung_uebersetzer',
+        'vorbehandeln' => 'ws_sicherung_vorbehandeln',
+        'pruefen' => 'ws_sicherung_pruefen',
+        'quer' => 'ws_sicherung_quer',
+        'jetzt' => 'ws_sicherung_stand',
+        't' => 'ws_t',
+    );
+}
+
+/** Die Schluessel, die eine Sicherung bis 3.2.14 noch nicht trug (seit 3.2.15) - sie behalten den geltenden Wert. */
+function ws_sicherung_spaeter()
+{
+    return array_values(array_diff(ws_neue_schluessel(), array('BASE.UDP_ENABLE')));
+}
+
+/**
+ * 3.2.24: eine Sicherung bis 3.2.23 - kein _plugin, Kopf _hinweis mit dem festen Satz, den nur der Sichern-Knopf
+ * dieser Linie schrieb ("WiFi Scanner NG - Sicherung der Einstellungen ..."), daneben hoechstens _stand und
+ * _warnung, und flache Schluessel BASE.X. Umgeschrieben in die Form des Moduls: BASE.X in den Block BASE, USERn.F in
+ * den n-ten Eintrag der Liste USER (eine fehlende Nummer als leerer Eintrag, damit die Pruefung sie nennt), alles
+ * andere bleibt oben (Sprachansagen; Unbekanntes nennt das Modul). Alles andere ohne _plugin: null, abgewiesen.
+ */
+function ws_sicherung_uebersetzer($daten)
+{
+    if (!is_array($daten) || !isset($daten['_hinweis']) || !is_string($daten['_hinweis'])
+        || strpos($daten['_hinweis'], 'WiFi Scanner NG - Sicherung der Einstellungen') !== 0) {
+        return null;
+    }
+    $aus = array();
+    $base = array();
+    $users = array();
     foreach ($daten as $k => $w) {
         $k = (string) $k;
-        /* Der lesbare Kopf der eigenen Sicherungsdatei (_hinweis, _stand)
-         * wird UEBERGANGEN, nicht beanstandet.
-         *
-         * Beim ersten Messdurchgang am 26.08.2026 lehnte diese Funktion die
-         * Datei ab, die ws_sicherung_inhalt() zwei Zeilen vorher selbst
-         * erzeugt hatte - der Kopf stand nicht in der Liste der bekannten
-         * Schluessel. Genau der Fall, vor dem der Absatz darueber warnt:
-         * eine zu enge Liste weist die Sicherung ab, die man zurueckspielen
-         * will. Gefunden hat es nicht das Lesen, sondern der Prueflauf mit
-         * einer echten Sicherungsdatei. */
         if ($k !== '' && $k[0] === '_') {
+            if (!in_array($k, array('_hinweis', '_stand', '_warnung'), true)) {
+                return null;
+            }
+            $aus[$k] = $w;
             continue;
         }
-        if ((string) $k === 'BASE.ANSAGE_BLOCK') { continue; }     // das Feld mit den Sprechtoken kommt nie aus einer Datei
-        $ws_aw = ws_ansage_wert($k, $w);
-        if ($ws_aw !== null) {
-            if ($ws_aw) { $ws_ab[$k] = $w; } else { $mangel[] = ws_t('ANSAGEPLUGIN.M_FEHL'); }
-            continue;
+        if (preg_match('/^BASE\.(.+)\z/', $k, $m) === 1) {
+            $base[$m[1]] = $w;
+        } elseif ($k === 'BASE' && is_array($w)) {
+            /* Ein Block BASE neben den flachen Schluesseln (dieselben Namen BASE.X in der Form des Moduls, etwa von
+             * Hand nachgetragen): seine Eintraege gelten mit, nach den flachen. */
+            $nest = $w;
+        } elseif (preg_match('/^USER([0-9]{1,3})\.(.+)\z/', $k, $m) === 1) {
+            $users[(int) $m[1]][$m[2]] = $w;
+        } else {
+            $aus[$k] = $w;
         }
-        $ok = in_array($k, $bekannt, true)
-              || preg_match('/^USER[0-9]+[.](NAME|MACS)$/', $k) === 1;
-        if (!$ok) {
-            $mangel[] = sprintf(ws_t('EINST.SICH_FREMD'), ws_e($k));
-            continue;
-        }
-        /* O6 (Durchgang 02.10.2026, Klasse 10): ein LEERES Merkwort in der
-         * Datei wird nicht uebernommen - das geltende bleibt. Bis 3.2.9 stand
-         * danach TOKEN= leer, der naechste Seitenaufruf wuerfelte still ein
-         * neues, und jede Adresse im Miniserver bekam 403 (Pruefer Oberflaeche
-         * Nr. 9). */
-        if ($k === 'BASE.TOKEN' && is_string($w) && trim($w) === '') {
-            $token_leer = true;
-            $hinweise[] = ws_t('EINST.SICH_TOKEN_LEER');
-            continue;
-        }
-        $grund = ws_wert_pruefen($k, $w);
-        if ($grund !== '') {
-            $mangel[] = sprintf(ws_t('EINST.SICH_WERT'), ws_e($k), ws_e($grund));
-            continue;
-        }
-        $neu[$k] = (string) $w;
-        $anzahl++;
     }
-    /* Die Personenabschnitte muessen zusammenpassen: BASE.USERS nennt die
-     * Anzahl, und zu jeder Nummer bis dahin gehoert NAME und MACS. Fehlt
-     * einer, faende check.pl eine Person ohne Adressen und meldete sie
-     * jeden Lauf als abwesend. */
-    if ($token_leer) {
-        $neu['BASE.TOKEN'] = ws_token(ws_config_read(false));
+    if (!$base) {
+        return null;
     }
-    /* O4 (Durchgang 02.10.2026): zwei Personen, aus denen dasselbe Thema
-     * entsteht ("Anna B" und "Anna_B", "Jürgen" und "Juergen"), sind eine
-     * Beanstandung - sonst schreiben beide retained auf ein Thema. */
-    foreach (ws_themen_doppelt($neu) as $ws_dt => $ws_dn) {
-        $mangel[] = sprintf(ws_t('EINST.SICH_THEMA_DOPPELT'), ws_e('wifi_ng/' . $ws_dt), ws_e(implode(', ', $ws_dn)));
+    if (isset($nest)) {
+        foreach ($nest as $nk => $nw) {
+            $base[(string) $nk] = $nw;
+        }
     }
-    if (!$mangel) {
-        $n = (int) $neu['BASE.USERS'];
-        for ($i = 1; $i <= $n; $i++) {
-            if (!isset($neu['USER' . $i . '.NAME']) || !isset($neu['USER' . $i . '.MACS'])) {
-                $mangel[] = sprintf(ws_t('EINST.SICH_USER_FEHLT'), $i);
+    $aus['BASE'] = $base;
+    $aus['USER'] = array();
+    $n = $users ? max(array_keys($users)) : 0;
+    for ($i = 1; $i <= $n; $i++) {
+        $aus['USER'][] = isset($users[$i]) ? $users[$i] : array();
+    }
+    return $aus;
+}
+
+/**
+ * Vor der Pruefung, wie bis 3.2.23 ws_ansage_sicherung_vor(): ein Block tts mit Sprechtoken oder mit unzulaessigem
+ * Wert wird unbrauchbar gemacht (die Wertpruefung nennt ihn), sonst vervollstaendigt, und die geltenden Sprechtoken
+ * der Ziele bleiben.
+ */
+function ws_sicherung_vorbehandeln($bereit, $jetzt, $daten = null)
+{
+    if (array_key_exists('tts', $bereit)) {
+        $jt = (is_array($jetzt) && isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+        $g = '';
+        $pr = is_array($bereit['tts']) ? ansage_wert_pruefen($bereit['tts'], $g, ws_ansage_modi()) : null;
+        if (!is_array($bereit['tts']) || ansage_sicherung_mangel($bereit['tts']) || $pr === null) {
+            $bereit['tts'] = 'ABGEWIESEN';
+        } else {
+            list($tv) = ansage_vervollstaendigen($pr, 'aus');
+            $bereit['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
+        }
+    }
+    return $bereit;
+}
+
+/**
+ * Die Wertpruefung je Schluessel - dieselbe wie im Formular (ws_wert_pruefen()), fuer [BASE] und jede Person. Die
+ * Beanstandung nennt den Schluessel und den Grund, nie den Wert.
+ */
+function ws_sicherung_pruefen($k, $w, $neu = null, $roh = null)
+{
+    $aw = ws_ansage_wert($k, $w);
+    if ($aw !== null) {
+        return $aw ? '' : ws_t('ANSAGEPLUGIN.M_FEHL');
+    }
+    if (!is_array($w)) {
+        return sprintf(ws_t('EINST.SICH_WERT'), ws_e((string) $k), ws_e('kein Abschnitt'));
+    }
+    $aus = array();
+    if ($k === 'BASE') {
+        foreach ($w as $sk => $sv) {
+            $g = ws_wert_pruefen('BASE.' . $sk, $sv);
+            if ($g !== '') {
+                $aus[] = sprintf(ws_t('EINST.SICH_WERT'), ws_e('BASE.' . $sk), ws_e($g));
             }
         }
-        foreach (array_keys($neu) as $k) {
-            if (preg_match('/^USER([0-9]+)[.]/', $k, $m) === 1 && (int) $m[1] > $n) {
-                $mangel[] = sprintf(ws_t('EINST.SICH_USER_UEBER'), ws_e($k), $n);
-            }
-        }
+        return $aus;
     }
-    if ($anzahl === 0) {
-        $mangel[] = ws_t('EINST.SICH_LEER');
-    }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
-    $fehlend = array();
-    $ergaenzt = array();
-    foreach (array_keys(ws_vorgaben()) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
-            /* Gruppe 14 (2.7): eine Sicherung aus einer aelteren Fassung kennt die neuen Schluessel nicht - fuer
-             * sie gilt dieselbe Uebergangsregel wie im Update (ENDPUNKT_EIN nach Merkwort, UDP_ENABLE 1, die
-             * uebrigen 0), mit Hinweis statt Beanstandung (Muster Heimkino hk_sicherung_lesen). Fehlt ein
-             * ALTER Schluessel, bleibt es eine Beanstandung. */
-            if (in_array($fk, ws_neue_schluessel(), true)) {
-                $neu[$fk] = ws_uebergang_wert($fk, $neu);
-                $ergaenzt[] = $fk . '=' . $neu[$fk];
+    if ($k === 'USER') {
+        foreach (array_values($w) as $i => $u) {
+            if (!is_array($u)) {
+                $aus[] = sprintf(ws_t('EINST.SICH_USER_FEHLT'), $i + 1);
                 continue;
             }
-            $fehlend[] = $fk;
+            if (!array_key_exists('NAME', $u) || !array_key_exists('MACS', $u)) {
+                $aus[] = sprintf(ws_t('EINST.SICH_USER_FEHLT'), $i + 1);     // wie bis 3.2.23
+                continue;
+            }
+            foreach (array('NAME', 'MACS') as $f) {
+                $g = ws_wert_pruefen('USER' . ($i + 1) . '.' . $f, $u[$f]);
+                if ($g !== '') {
+                    $aus[] = sprintf(ws_t('EINST.SICH_WERT'), ws_e('USER' . ($i + 1) . '.' . $f), ws_e($g));
+                }
+            }
+        }
+        return $aus;
+    }
+    return '';
+}
+
+/**
+ * Die Querpruefungen wie bis 3.2.23: BASE.USERS nennt genau die Zahl der Personen (sonst faende check.pl eine
+ * Person ohne Adressen oder uebersaehe eine), und zwei Namen ergeben nicht dasselbe MQTT-Thema (O4). Rueckgabe fuer
+ * das Modul: Liste von array(Name, Text).
+ */
+function ws_sicherung_quer($neu, $r = null, $daten = null)
+{
+    $aus = array();
+    /* Sind die Personen oder [BASE] selbst beanstandet, steht in $neu noch die Vorgabe - kein Abgleich dagegen. */
+    $schon = array();
+    foreach ((is_array($r) && isset($r['beanstandet']) && is_array($r['beanstandet'])) ? $r['beanstandet'] : array() as $x) {
+        if (isset($x['name'])) { $schon[(string) $x['name']] = true; }
+    }
+    $users = (isset($neu['USER']) && is_array($neu['USER'])) ? count($neu['USER']) : 0;
+    $soll = (isset($neu['BASE']['USERS']) && is_scalar($neu['BASE']['USERS'])) ? (int) $neu['BASE']['USERS'] : -1;
+    if ($soll !== $users && !isset($schon['USER']) && !isset($schon['BASE'])) {
+        for ($i = $users + 1; $i <= $soll; $i++) {
+            $aus[] = array('BASE.USERS', sprintf(ws_t('EINST.SICH_USER_FEHLT'), $i));
+        }
+        for ($i = max($soll, 0) + 1; $i <= $users; $i++) {
+            $aus[] = array('BASE.USERS', sprintf(ws_t('EINST.SICH_USER_UEBER'), ws_e('USER' . $i), max($soll, 0)));
         }
     }
-    if ($ergaenzt) {
-        $hinweise[] = sprintf(ws_t('EINST.SICH_ERGAENZT'), ws_e(implode(', ', $ergaenzt)));
+    $flach = ws_sicherung_flach($neu);
+    foreach (ws_themen_doppelt($flach) as $ws_dt => $ws_dn) {
+        $aus[] = array('USER', sprintf(ws_t('EINST.SICH_THEMA_DOPPELT'), ws_e('wifi_ng/' . $ws_dt), ws_e(implode(', ', $ws_dn))));
     }
-    if ($fehlend) {
-        $mangel[] = sprintf(ws_t('EINST.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
-    }
-    if ($ws_ab) { $neu['BASE.ANSAGE_BLOCK'] = base64_encode((string) json_encode($ws_ab)); }     // die Felder der Sprachansagen zurueck in das eine Feld
-    return array($mangel ? null : $neu, $mangel, $anzahl, $hinweise);
+    return $aus;
+}
+
+/**
+ * Die Sicherungsdatei als JSON-Text: Kopf (_hinweis, _plugin, _fassung, _stand) und Inhalt baut das Modul. Wuerde
+ * das Zurueckspielen genau diese Datei abweisen, sagt es der Kopf _warnung - nur mit Namen, nie mit Werten;
+ * geliefert wird trotzdem (X-3 wie bisher). '' wenn sich der Text nicht bilden laesst.
+ */
+function ws_sicherung_json()
+{
+    return sicherung_json(sicherung_bauen(ws_sicherung_beschreibung(), ws_sicherung_stand()));
+}
+
+/**
+ * X-3 (Bauliste O7): Bestuende die eigene Sicherung das eigene Zurueckspielen? Geprueft mit dem Modul
+ * (sicherung_selbstpruefung()) - DERSELBEN Pruefung wie beim Zurueckspielen. Rueckgabe: die Namen der beanstandeten
+ * Einstellungen, leer = besteht; nie Werte. Bis 3.2.23 ws_sicherung_warnungen().
+ */
+function ws_sicherung_eigene_maengel()
+{
+    $b = ws_sicherung_beschreibung();
+    $stand = ws_sicherung_stand();
+    return sicherung_selbstpruefung($b, sicherung_bauen($b, $stand), $stand);
+}
+
+/** Vor dem Speichern, wie bis 3.2.23: der Vermerk ansage_aus_datei steht nach einem Zurueckspielen auf 1. */
+function ws_sicherung_vorbereiten($neu, $jetzt = null, $r = null)
+{
+    $neu['ansage_aus_datei'] = 1;
+    return $neu;
+}
+
+/** Speichern genau des Stands, den das Modul liefert - ueber ws_config_write(), die die Zweitschrift mitzieht. */
+function ws_sicherung_speichern($neu, $jetzt = null, $r = null)
+{
+    return ws_config_write(ws_sicherung_flach($neu));
 }
 
 /**
@@ -1970,28 +2166,6 @@ function ws_themen_doppelt(array $cfg)
         if (count($namen) > 1) { $doppelt[$t] = $namen; }
     }
     return $doppelt;
-}
-
-/**
- * X-3 (Bauliste O7): welche Werte der geltenden Konfiguration bestuenden die
- * Pruefung beim Zurueckspielen NICHT? Nur die Schluesselnamen, nie die Werte.
- * "Einstellungen sichern" traegt sie als _warnung in die Datei, und der
- * Reiter zeigt sie gelb am Knopf.
- */
-function ws_sicherung_warnungen(?array $cfg = null)
-{
-    if ($cfg === null) { $cfg = ws_config_read(false); }
-    $schlecht = array();
-    foreach ($cfg as $k => $v) {
-        $k = (string) $k;
-        $bekannt = array_key_exists($k, ws_vorgaben()) || preg_match('/^USER[0-9]+[.](NAME|MACS)$/', $k) === 1;
-        if (!$bekannt || ($k === 'BASE.TOKEN' && trim((string) $v) === '')) { continue; }
-        if (ws_wert_pruefen($k, $v) !== '') { $schlecht[] = $k; }
-    }
-    foreach (ws_themen_doppelt($cfg) as $namen) {
-        $schlecht[] = 'USER*.NAME (' . implode(', ', $namen) . ')';
-    }
-    return $schlecht;
 }
 
 /**
@@ -2065,52 +2239,6 @@ function ws_befehl_merken($aktion, $wert)
     } else {
         @unlink($tmp);
     }
-}
-
-/**
- * Der Inhalt der Sicherungsdatei.
- *
- * Vollstaendig aus den Vorgaben heraus: geschrieben werden ALLE Schluessel,
- * nicht nur die abweichenden. Sonst kaeme ein fehlender Schluessel beim
- * Zurueckspielen aus der Vorgabe, und das ist falsch, wenn der Anwender ihn
- * bewusst auf den Vorgabewert gesetzt hatte.
- *
- * Enthalten ist BASE.TOKEN - das Merkwort der Anlage. Ohne es stuenden nach
- * dem Zurueckspielen alle Felder richtig, und der Miniserver kaeme trotzdem
- * nicht an den Endpunkt; die Datei waere als Umzugshilfe wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das.
- *
- * NICHT enthalten ist das Formularmerkmal - das lebt eine Sitzung lang und
- * hat in einer Datei nichts zu suchen.
- */
-function ws_sicherung_inhalt()
-{
-    $cfg = ws_config_read(false);
-    $aus = ws_vorgaben();
-    foreach ($aus as $k => $v) {
-        if (isset($cfg[$k])) {
-            $aus[$k] = $cfg[$k];
-        }
-    }
-    foreach ($cfg as $k => $v) {
-        if (preg_match('/^USER[0-9]+[.](NAME|MACS)$/', (string) $k) === 1) {
-            $aus[$k] = $v;
-        }
-    }
-    $kopf = array(
-        '_hinweis' => 'WiFi Scanner NG - Sicherung der Einstellungen. Enthaelt das '
-                    . 'Merkwort der Anlage: wie ein Passwort behandeln.',
-        '_stand'   => date('Y-m-d H:i:s'),
-    );
-    /* X-3 (Bauliste O7): Werte, die das Zurueckspielen abwiese, werden genannt
-     * (nur Namen, nie Werte). Die Datei bleibt vollstaendig. */
-    $warn = ws_sicherung_warnungen($cfg);
-    if ($warn) {
-        $kopf['_warnung'] = 'Diese Werte wuerde das Zurueckspielen abweisen: ' . implode(', ', $warn);
-    }
-    unset($aus['BASE.ANSAGE_BLOCK']);     // nie ein Sprechtoken; die Felder kommen ohne es
-    $aus = ws_ansage_fuer_sicherung(ws_ansage_cfg()) + $aus;
-    return array($kopf, $aus);
 }
 
 /* ws_vorlage() (VirtualInHttp "WifiScanner Anwesenheit" an http://localhost, PollingTime 604800) ist mit 3.2.15

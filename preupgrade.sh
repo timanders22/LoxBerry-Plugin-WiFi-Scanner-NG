@@ -386,8 +386,33 @@ netz_zweitschrift() {   # netz_zweitschrift cfg|abo <datei>
         ZS_FEHL="$ZS_FEHL $2"
     fi
 }
+# 3.2.24 (Sicherungsmodul, 18.11.2026): EINE Zweitschrift unter EINEM Namen. Bis 3.2.23 schrieb die Oberflaeche
+# bei jedem Speichern <ordner>.wifi_scanner.backup und dieses Skript <ordner>.backup.wifi_scanner.cfg - zwei
+# Verfahren fuer dieselbe Datei (Regeln/05: ein Sicherungsverfahren, nicht zwei). Seit 3.2.24 schreibt auch die
+# Oberflaeche den Namen des Hausstandards. Der alte Name wird hier uebernommen: ist die Zweitschrift darunter heil
+# und juenger als die unter dem neuen Namen (oder fehlt diese), tritt sie an deren Stelle, wenn ws_darf_ersetzen
+# es erlaubt (dieselbe Inhaltsregel wie unten). Danach entscheidet netz_zweitschrift wie bisher, ob die
+# Konfiguration selbst sie ersetzt. Steht unter dem neuen Namen eine heile Zweitschrift, faellt der alte weg - er
+# bleibt nicht verwaist liegen (postinstall.sh spielt nur den neuen zurueck).
+WS_ZS_ALT="$NETZ_BASE/config/plugins/$NETZ_PDIR.wifi_scanner.backup"
+WS_ZS_NEU="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.wifi_scanner.cfg"
+if [ -f "$WS_ZS_ALT" ] && { [ ! -f "$WS_ZS_NEU" ] || [ "$WS_ZS_ALT" -nt "$WS_ZS_NEU" ]; } \
+        && ws_darf_ersetzen cfg "$WS_ZS_ALT" "$WS_ZS_NEU"; then
+    if zs_hinlegen "$WS_ZS_ALT" "$WS_ZS_NEU"; then
+        echo "<OK> Die Zweitschrift unter dem bisherigen Namen ist uebernommen ($WS_ZS_NEU)."
+    else
+        echo "<WARNING> Die Zweitschrift unter dem bisherigen Namen liess sich nicht uebernehmen; sie bleibt liegen."
+    fi
+fi
 netz_zweitschrift abo mqtt_subscriptions.cfg
 netz_zweitschrift cfg wifi_scanner.cfg
+if [ -f "$WS_ZS_ALT" ] && ws_heil cfg "$WS_ZS_NEU"; then
+    if rm -f "$WS_ZS_ALT" 2>/dev/null && [ ! -e "$WS_ZS_ALT" ]; then
+        echo "<INFO> Die Zweitschrift unter dem bisherigen Namen ist entfernt; es gilt $WS_ZS_NEU."
+    else
+        echo "<WARNING> Die Zweitschrift unter dem bisherigen Namen liess sich nicht entfernen ($WS_ZS_ALT)."
+    fi
+fi
 
 zs_schluss
 exit 0
