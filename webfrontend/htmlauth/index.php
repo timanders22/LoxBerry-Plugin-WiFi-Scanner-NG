@@ -118,7 +118,8 @@ if (ws_upgrade_laeuft()) {
     $ws_war_post = (isset($_SERVER['REQUEST_METHOD'])
                     && $_SERVER['REQUEST_METHOD'] === 'POST');
     if (class_exists('LBWeb', false)) {
-        LBWeb::lbheader(ws_t('ALLG.TITEL'), ws_hilfe_url(), 'help.html');
+        require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+        LBWeb::lbheader(plugin_kopftitel(ws_t('ALLG.TITEL'), __DIR__), ws_hilfe_url(), 'help.html');
     }
     echo '<div class="smw">' . "\n"
        . '<h1>' . ws_e(ws_t('ALLG.TITEL')) . '</h1>' . "\n"
@@ -952,7 +953,8 @@ $ws_fassung = ws_mqtt_fassung();
 // WICHTIG: LBWeb::lbheader() setzt SDK-Globale - deshalb ueberall ws_-Praefix.
 $ws_frame = class_exists('LBWeb', false);
 if ($ws_frame) {
-    LBWeb::lbheader(ws_t('ALLG.TITEL'), ws_hilfe_url(), 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel(ws_t('ALLG.TITEL'), __DIR__), ws_hilfe_url(), 'help.html');
 }
 /* O8: die Seite wird gepuffert; ws_formzeile_einsetzen() zaehlt am Ende die
  * Formulare im fertigen HTML und setzt die Zeile im Reiter Test ein. */
