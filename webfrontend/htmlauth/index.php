@@ -458,6 +458,12 @@ if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $ws_rei
  * Ausnahme nach Entscheidung 19: Leerraum am Rand wird still abgeschnitten.
  */
 /* Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+/* 3.2.28: Testmeldung an SignalBot (Knopf unter den Sprachansagen) - wie die Testansage darunter. */
+if ((isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') && isset($_POST['meld_test'])) {
+    list($ws_at, $ws_ag) = ws_meld_test();
+    if ($ws_at) { $ws_meldungen[] = ws_e(ws_t('SIGNALMELDUNG.T_OK')); } else { $ws_fehler[] = ws_e($ws_ag); }
+    $ws_tab = 'tab-settings';
+}
 if ((isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') && isset($_POST['ansage_test'])) {
     list($ws_at, $ws_ag) = ws_ansage_test();
     if ($ws_at) { $ws_meldungen[] = ws_e(ws_t('ANSAGEPLUGIN.M_TEST_OK')); } else { $ws_fehler[] = ws_e(ws_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $ws_ag); }

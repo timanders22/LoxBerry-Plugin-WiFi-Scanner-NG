@@ -9,6 +9,11 @@ Holland](https://github.com/Gagi2k/LoxBerry-Plugin-WifiScanner) (Apache
 License 2.0). Herkunft und die vollständige Liste der Änderungen stehen in
 [NOTICE](NOTICE).
 
+## Neu in 3.2.28
+
+- **Statusmeldungen an SignalBot (Auftrag des Hausherrn 23.11.2026):** Im Reiter *Einstellungen* steht unter den Sprachansagen der neue Block „Meldungen an SignalBot“, ab Werk aus. Eingeschaltet schickt das Plugin dieselben Anlässe, die es ansagen kann – je Anlass eigener Haken, auch ohne eingerichtete Ansage – als Nachricht über MQTT an das Plugin SignalBot (Thema `haus/meldung/<ordner>`, nie retained; SignalBot ab 0.9.44 mit „Meldungen unter haus/meldung annehmen“ und diesem Ordner unter „Meldungen anderer Plugins annehmen von“). Dieselbe Meldung frühestens wieder nach der eingestellten Sperre (Vorgabe 60 Minuten), „wieder da“ nur nach einer gemeldeten Störung, höchstens 10 Nachrichten je Stunde, darüber eine Sammelzeile; die Nachtruhe stellt SignalBot. Ein Text, der wie ein Zugangsdatum aussieht, geht nicht hinaus. Der Knopf „Testmeldung senden“ prüft den Weg mit Quittung, die Zeile darunter nennt die letzte. Gemeinsames Modul `meldung.php`, Texte im Abschnitt `[SIGNALMELDUNG]`.
+- Gemeinsames Sicherungsmodul auf 1.3.0 nachgezogen (Einheitlichkeit, wie in der Welle Lade-Beanstandungen); am Verhalten von „Einstellungen sichern“ und „Einstellungen zurückspielen“ ändert sich nichts.
+
 ## Neu in 3.2.27
 
 - Gemeinsames Sprachmodul 1.5.0 (Entscheidung des Hausherrn 22.11.2026): Die Nachtruhe der Ansagen kann an Nicht-Schultagen (Samstag, Sonntag, Feiertage, Ferien) später enden. Neues Feld „Nachtruhe an Nicht-Schultagen bis“ bei „Wann gesprochen wird“, ab Werk leer: Dann gilt die Zeit, die im Plugin Ferien und Feiertage eingestellt ist (MQTT-Thema `haus/ansage/nachtruhe_frei_bis`); ohne sie endet die Nachtruhe wie an Schultagen. Ob heute ein Schultag ist, sagt `haus/kalender/heute/frei` (nur bei `haus/kalender/datum` = heute); ohne diese Aussage zählen nur Samstag und Sonntag. Dringende Ansagen übergehen die Nachtruhe wie bisher. Ohne Vorgabe und ohne eigene Zeit ändert sich nichts.
